@@ -159,6 +159,18 @@ Why this benchmark matters
 
 This shows best-case multicore scaling with very little synchronization overhead.
 
+Why we need Benchmark 2 and how it affects the decision flowchart
+
+Benchmark 1 measured the cost of synchronization when there is almost no real work — empty parallel regions and barriers repeated millions of times. The results showed OpenMP is 5 to 16 times faster than Rust on fork/join and barrier overhead. However, that result alone is incomplete. It does not tell us whether OpenMP has an advantage when threads are doing meaningful work and rarely need to synchronize.
+
+Benchmark 2 answers the opposite question. Each thread runs independently for a long time and only touches shared state once at the very end to combine its local hit count into the total. Synchronization cost is nearly zero relative to the compute time. This makes it the best-case scenario for parallel scaling.
+
+The key question Benchmark 2 answers is: when synchronization is not the bottleneck, do the two languages scale equally well?
+
+If they scale nearly identically on this workload, it confirms that the gap seen in Benchmark 1 was specifically about synchronization overhead and not about raw compute throughput or the quality of the compiler's parallel code generation. If one still outperforms the other here, it suggests a deeper difference worth investigating.
+
+This result directly feeds into Q6 of the decision flowchart, which asks whether scalability is a primary concern. Q6A then splits on whether the bottleneck is synchronization overhead or load imbalance. Benchmark 2 provides the evidence for the synchronization overhead branch: if Rust and OpenMP converge on this workload, a decision maker whose system has coarse-grained parallel bodies and rare synchronization has no performance reason to prefer OpenMP over Rust, and should base the decision on other factors such as safety requirements, team background, and long-term maintainability.
+
 Benchmark 3: Parallel Histogram or Dot Product
 Purpose
 
