@@ -863,3 +863,15 @@ Concern 5: Benchmark 3 Choice Is Still Open
 The plan lists Histogram or Dot Product as alternatives but does not commit to one. Given the project is already underway, leaving this open creates scheduling risk and makes it harder to design the Rust side in advance.
 
 Mitigation: Choose Histogram now if time permits, because it produces more interesting synchronization contention data and makes a stronger case for comparing OpenMP reduction support against Rust's explicit synchronization model. Use Dot Product only if implementation time becomes a hard constraint.
+
+20. Backlog
+
+Items that are known to be needed but are blocked or deferred.
+
+Backlog Item 1: Clean 1-thread and 2-thread baseline for Benchmark 2
+
+During Benchmark 2 OpenMP runs on crunchy2 and crunchy5, the 1-thread and 2-thread results were corrupted by interference from other users' jobs on the shared node. At low thread counts the benchmark occupies only 1-2 of 64 cores, leaving the rest available for the job scheduler to assign competing processes. This inflates runtime unpredictably and makes speedup calculations unreliable.
+
+Action required: Re-run the 1-thread and 2-thread configurations during off-peak hours (early morning) on a quiet node. Confirm that all five trials fall within 10% of each other before accepting the baseline. Apply the same procedure to the Rust version of Benchmark 2 once implemented.
+
+All Benchmark 2 speedup numbers in the report are provisional until this is resolved.
