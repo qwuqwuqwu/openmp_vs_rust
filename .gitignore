@@ -1,1 +1,7 @@
 .DS_Store
+
+# C++ executables
+Benchmark1/cpp/openmp_benchmark1
+
+# Rust build artifacts
+Benchmark1/rust/target/

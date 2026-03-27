@@ -1,9 +1,9 @@
 #!/bin/bash
 
-OUT="results_overhead.csv"
+OUT="../results_openmp.csv"
 BIN="./openmp_benchmark1"
 
-REGION_REPS=5000000
+REGION_REPS=100000
 BARRIER_REPS=100000
 ATOMIC_REPS=100000
 TRIALS=5
