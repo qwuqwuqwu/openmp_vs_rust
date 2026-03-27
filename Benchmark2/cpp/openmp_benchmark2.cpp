@@ -1,9 +1,9 @@
 #include <omp.h>
 
+#include <cstdint>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
-#include <random>
 #include <string>
 
 // Monte Carlo Pi estimation.
@@ -15,13 +15,36 @@
 // Parallelism structure:
 //   - The total sample count is split evenly across threads via a parallel
 //     reduction loop.
-//   - Each thread uses its own seeded mt19937 RNG to avoid contention on a
+//   - Each thread uses its own seeded Xorshift64 RNG to avoid contention on a
 //     shared generator and to make results reproducible per thread count.
 //   - The only shared-state operation is the final reduction of hit counts,
 //     expressed as a single OpenMP reduction clause.
 //
+// RNG: Xorshift64 — matches the Rust implementation exactly so that raw
+// performance differences reflect the parallelism model, not RNG speed.
+// Seeded with (42 + thread_id) on both sides.
+//
 // This is intentionally embarrassingly parallel: threads share no state during
 // sampling. Synchronization cost is limited to one reduction at the end.
+
+// Xorshift64 — identical algorithm to Rust version
+struct Xorshift64 {
+    uint64_t state;
+
+    explicit Xorshift64(uint64_t seed) : state(seed == 0 ? 0xdeadbeef : seed) {}
+
+    uint64_t next_u64() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state;
+    }
+
+    // Returns uniform double in [0.0, 1.0)
+    double next_f64() {
+        return (double)(next_u64() >> 11) * (1.0 / (double)(1ULL << 53));
+    }
+};
 
 struct Config {
     long long samples  = 100000000LL; // total dart throws
@@ -85,16 +108,16 @@ Result run_one_trial(const Config& cfg) {
     {
         // Each thread gets its own RNG seeded by thread id so results are
         // deterministic and threads never share generator state.
+        // Seed matches Rust version: 42 + thread_id
         int tid = omp_get_thread_num();
-        std::mt19937_64 rng(42 + tid);
-        std::uniform_real_distribution<double> dist(0.0, 1.0);
+        Xorshift64 rng(42 + (uint64_t)tid);
 
         long long local_hits = 0;
 
 #pragma omp for schedule(static)
         for (long long i = 0; i < cfg.samples; ++i) {
-            double x = dist(rng);
-            double y = dist(rng);
+            double x = rng.next_f64();
+            double y = rng.next_f64();
             if (x * x + y * y < 1.0) {
                 ++local_hits;
             }
