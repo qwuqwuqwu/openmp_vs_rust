@@ -67,7 +67,7 @@ flowchart TD
 
     Q6A -- "Synchronization overhead\nis the bottleneck" --> OPENMP_SCALE
 
-    OPENMP_SCALE(["✅ Likely OpenMP\n\nBenchmark 1 shows OpenMP\nbarrier and fork/join overhead\nscales far better than Rust's\ncondvar-based primitives.\n\nAt 8 threads:\n  OpenMP barrier: ~4 µs\n  Rust barrier:   ~55 µs\n\n[TBD — update with Benchmark 2\nMonte Carlo scalability results]"])
+    OPENMP_SCALE(["✅ Likely OpenMP\n\nBenchmark 1 shows OpenMP\nbarrier and fork/join overhead\nscales far better than Rust's\ncondvar-based primitives.\n\nAt 8 threads:\n  OpenMP barrier: ~4 µs\n  Rust barrier:   ~55 µs\n\nBenchmark 2-1 (popcount, N=2³³):\nAt 64 threads, OpenMP is 4% faster\nthan Rust despite a slower inner\nloop — OpenMP's persistent thread\npool wakes up instantly while Rust\nspawns 64 fresh OS threads each\ntrial (~3 ms overhead per run).\n\nCrossover: 32T→64T, where per-thread\nwork drops to ~250 ms and thread\nmanagement overhead becomes visible."])
 
     Q6A -- "Load imbalance\nis the bottleneck" --> OPENMP_SCHED
 
@@ -103,10 +103,10 @@ This table will be filled in as benchmarks are completed.
 |---|---|---|---|
 | Q3 — Sync frequency | Fork/join overhead vs thread count | Benchmark 1 | ✅ Complete |
 | Q5 — Reduction workloads | Reduction LOC, runtime, correctness effort | Benchmark 3 | 🔲 Pending |
-| Q6A — Sync overhead at scale | Barrier cost, speedup curves | Benchmark 1 + 2 | ⚠️ Partial |
+| Q6A — Sync overhead at scale | Barrier cost, speedup curves | Benchmark 1 + 2-1 | ✅ Complete |
 | Q6A — Load imbalance | Runtime under uneven work, scheduling | Benchmark 4 | 🔲 Pending |
 | Q4 — Custom scheduling | LOC, flexibility, runtime comparison | Benchmark 4 | 🔲 Pending |
-| Q6 — Scalability | Speedup and efficiency vs thread count | Benchmark 2 | 🔲 Pending |
+| Q6 — Scalability | Speedup and efficiency vs thread count | Benchmark 2-1 | ✅ Complete |
 
 ---
 
@@ -133,6 +133,27 @@ These facts are established and directly feed into the flowchart:
 
 6. **Rust's borrow checker caught all sharing bugs at compile time.** No runtime debugging needed.
    → Drives Q1/Q8: for safety-critical or long-lived systems, Rust's upfront cost is justified.
+
+---
+
+## Key Findings (Benchmark 2-1 — Embarrassingly Parallel Scalability)
+
+These facts are established from the popcount benchmark (N = 2³³, 1–64 threads, both implementations clean):
+
+7. **Both OpenMP and Rust scale at near-identical efficiency for compute-bound embarrassingly parallel work.**
+   Both reach 97–100% parallel efficiency from 1T to 16T. Neither parallelism model has a structural scalability advantage when synchronization is absent.
+   → Q6 confirmed: if scalability is the concern, the decision must be made on other axes.
+
+8. **Rust/LLVM is ~1.13–1.15× faster than C++/GCC from 1T to 16T.**
+   The gap is a **constant multiplier** — it does not change as thread count scales. This proves the difference is in single-thread code generation (LLVM's 8× loop unrolling vs GCC's scalar loop), not in the parallelism model. The scaling curves are parallel lines.
+   → Reinforces Q7/Q8: for pure throughput on a single machine, LLVM produces better code, but this does not affect the parallel scaling decision.
+
+9. **At 64 threads, OpenMP reverses the advantage and runs 4% faster than Rust.**
+   With 64 threads each doing only ~250ms of compute, Rust's cost of spawning 64 fresh OS threads per trial (~3ms total) erases its inner-loop speed advantage. OpenMP's persistent thread pool wakes up at nearly zero cost.
+   → Reinforces Q3: fine-grained or high-thread-count parallelism favors OpenMP's thread pool model. The Q3 `OPENMP_OVERHEAD` outcome is now supported by both Benchmark 1 (microsecond fork/join) and Benchmark 2-1 (64T reversal at 250ms/thread).
+
+10. **Neither compiler uses AVX2 SIMD for popcount on crunchy.**
+    AVX-512 VPOPCNTDQ is required for hardware-vectorized popcount; the cluster does not have it. Both compilers emit scalar `popcnt`. The LLVM advantage comes from loop unrolling and multiple accumulators, not SIMD width.
 
 ---
 
