@@ -171,6 +171,69 @@ If they scale nearly identically on this workload, it confirms that the gap seen
 
 This result directly feeds into Q6 of the decision flowchart, which asks whether scalability is a primary concern. Q6A then splits on whether the bottleneck is synchronization overhead or load imbalance. Benchmark 2 provides the evidence for the synchronization overhead branch: if Rust and OpenMP converge on this workload, a decision maker whose system has coarse-grained parallel bodies and rare synchronization has no performance reason to prefer OpenMP over Rust, and should base the decision on other factors such as safety requirements, team background, and long-term maintainability.
 
+Benchmark 2-1: Numerical Integration Pi (Fairness Revision of Benchmark 2)
+Purpose
+
+Measure embarrassingly parallel scalability without RNG bias.
+
+Why Benchmark 2-1 was added
+
+After completing Benchmark 2, assembly analysis of both binaries revealed that the Xorshift64 RNG's sequential bit-shift dependency chain was the true performance bottleneck — not the parallelism model. The three shift-XOR operations in Xorshift64 form a carry-over state dependency that prevents the compiler from processing multiple independent samples in parallel. Both GCC and LLVM spent most of their time running the RNG loop, making the benchmark measure compiler optimization of a specific loop pattern rather than parallel scaling quality.
+
+Benchmark 2-1 removes the RNG entirely. It estimates π using numerical integration of a deterministic formula:
+
+  π = ∫₀¹ 4 / (1 + x²) dx  ≈  Σᵢ₌₀ᴺ⁻¹ [ 4 / (1 + (i + 0.5)²/N²) ] × (1/N)
+
+Each interval i is fully independent with no state carry-over. The inner loop is a simple divide and add — identical cost per iteration, no sequential dependency. Both GCC and LLVM can apply AVX2 auto-vectorization freely, placing the comparison on parallel scaling rather than RNG loop optimization.
+
+Workload characteristics
+
+no RNG — fully deterministic, same result for the same N in both languages
+
+each interval evaluation is independent (no state dependency between iterations)
+
+uniform cost per interval — schedule(static) is optimal
+
+only synchronization is a single reduction at the end
+
+freely AVX2-vectorizable inner loop
+
+OpenMP version
+
+parallel loop with reduction(+:sum) and schedule(static)
+
+N = 1,000,000,000 intervals
+
+Rust version
+
+split intervals across threads manually
+
+each thread accumulates a private partial sum
+
+combine with fold at the end
+
+Metrics
+
+runtime
+
+speedup
+
+efficiency
+
+pi accuracy (should be much better than Monte Carlo at same N due to deterministic quadrature)
+
+Benchmark 2-1 vs Benchmark 2 relationship
+
+Benchmark 2 (Monte Carlo, Xorshift64) remains in the repository as a valid result: it demonstrates that RNG choice can dominate a benchmark that appears to be about parallelism, and the assembly analysis is an important finding. Benchmark 2-1 is the corrected version that isolates parallelism scaling from compiler loop optimization.
+
+Status
+
+OpenMP version: complete (Benchmark2-1/cpp/openmp_benchmark2_1.cpp)
+
+Rust version: pending
+
+Results: pending (run on crunchy with run_benchmark2_1.sh)
+
 Benchmark 3: Parallel Histogram or Dot Product
 Purpose
 
