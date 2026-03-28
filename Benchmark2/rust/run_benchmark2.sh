@@ -3,7 +3,7 @@
 OUT="../results_rust.csv"
 BIN="./target/release/rust_benchmark2"
 
-SAMPLES=100000000
+SAMPLES=1000000000
 TRIALS=5
 
 THREADS_LIST=(1 2 4 8 16 32 64)
