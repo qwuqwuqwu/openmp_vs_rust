@@ -171,46 +171,52 @@ If they scale nearly identically on this workload, it confirms that the gap seen
 
 This result directly feeds into Q6 of the decision flowchart, which asks whether scalability is a primary concern. Q6A then splits on whether the bottleneck is synchronization overhead or load imbalance. Benchmark 2 provides the evidence for the synchronization overhead branch: if Rust and OpenMP converge on this workload, a decision maker whose system has coarse-grained parallel bodies and rare synchronization has no performance reason to prefer OpenMP over Rust, and should base the decision on other factors such as safety requirements, team background, and long-term maintainability.
 
-Benchmark 2-1: Numerical Integration Pi (Fairness Revision of Benchmark 2)
+Benchmark 2-1: Popcount Sum (Fairness Revision of Benchmark 2)
 Purpose
 
-Measure embarrassingly parallel scalability without RNG bias.
+Measure embarrassingly parallel scalability with pure integer work and no floating-point computation.
 
 Why Benchmark 2-1 was added
 
-After completing Benchmark 2, assembly analysis of both binaries revealed that the Xorshift64 RNG's sequential bit-shift dependency chain was the true performance bottleneck — not the parallelism model. The three shift-XOR operations in Xorshift64 form a carry-over state dependency that prevents the compiler from processing multiple independent samples in parallel. Both GCC and LLVM spent most of their time running the RNG loop, making the benchmark measure compiler optimization of a specific loop pattern rather than parallel scaling quality.
+Benchmark 2 (Monte Carlo Pi) was bottlenecked by Xorshift64's sequential bit-shift dependency chain, not the parallelism model. Switching to numerical integration (attempted briefly) revealed a second FP bottleneck: the scalar `divsd` instruction, which GCC -O3 did not vectorize due to the integer-to-float index conversion pattern. Both Pi approaches ultimately measured compiler behavior on specific FP loop patterns rather than parallel scaling quality.
 
-Benchmark 2-1 removes the RNG entirely. It estimates π using numerical integration of a deterministic formula:
+Benchmark 2-1 removes all floating-point computation entirely. It computes:
 
-  π = ∫₀¹ 4 / (1 + x²) dx  ≈  Σᵢ₌₀ᴺ⁻¹ [ 4 / (1 + (i + 0.5)²/N²) ] × (1/N)
+  total = Σᵢ₌₀ᴺ⁻¹ popcount(i)
 
-Each interval i is fully independent with no state carry-over. The inner loop is a simple divide and add — identical cost per iteration, no sequential dependency. Both GCC and LLVM can apply AVX2 auto-vectorization freely, placing the comparison on parallel scaling rather than RNG loop optimization.
+where popcount(i) counts the number of set bits in i. This maps to a single hardware instruction (`popcnt`) on x86. Both GCC and LLVM emit identical machine code for this operation, so any performance difference is purely from the threading model, not code generation.
 
 Workload characteristics
 
+no floating-point — pure integer, single hardware instruction per element
+
 no RNG — fully deterministic, same result for the same N in both languages
 
-each interval evaluation is independent (no state dependency between iterations)
+no sequential state dependency between iterations — perfectly independent
 
-uniform cost per interval — schedule(static) is optimal
+uniform cost per element — schedule(static) is optimal
 
-only synchronization is a single reduction at the end
+result is mathematically verifiable: for N = 2^k, expected = k × 2^(k-1)
 
-freely AVX2-vectorizable inner loop
+for N = 2^33 = 8,589,934,592: expected total = 141,733,920,768
 
 OpenMP version
 
-parallel loop with reduction(+:sum) and schedule(static)
+parallel loop with reduction(+:total) and schedule(static)
 
-N = 1,000,000,000 intervals
+N = 2^33 = 8,589,934,592
+
+uses __builtin_popcountll → compiles to single `popcnt` instruction
 
 Rust version
 
-split intervals across threads manually
+split range [0, N) across threads manually
 
-each thread accumulates a private partial sum
+each thread accumulates a private uint64 local sum
 
 combine with fold at the end
+
+uses i.count_ones() → compiles to single `popcnt` instruction
 
 Metrics
 
@@ -220,11 +226,11 @@ speedup
 
 efficiency
 
-pi accuracy (should be much better than Monte Carlo at same N due to deterministic quadrature)
+correctness (total_bits == expected_bits)
 
 Benchmark 2-1 vs Benchmark 2 relationship
 
-Benchmark 2 (Monte Carlo, Xorshift64) remains in the repository as a valid result: it demonstrates that RNG choice can dominate a benchmark that appears to be about parallelism, and the assembly analysis is an important finding. Benchmark 2-1 is the corrected version that isolates parallelism scaling from compiler loop optimization.
+Benchmark 2 (Monte Carlo, Xorshift64) remains in the repository as a valid result: it demonstrates that RNG choice and compiler loop optimization can dominate a benchmark that appears to be about parallelism. The assembly analysis showing that LLVM used packed SSE2 mulpd while GCC was fully scalar is an important finding in its own right. Benchmark 2-1 is the corrected version that isolates parallelism scaling from compiler FP optimization.
 
 Status
 

@@ -1,63 +1,74 @@
 #include <omp.h>
 
+#include <cstdint>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <string>
 
-// Numerical Integration Pi estimation (Midpoint Rule).
+// Popcount Sum Benchmark.
 //
-// Approximates π using the identity:
-//   π = ∫₀¹ 4 / (1 + x²) dx
+// Computes the total number of set bits across all integers from 0 to N-1:
 //
-// The interval [0, 1] is divided into N equal subintervals.
-// Each subinterval i uses the midpoint x_i = (i + 0.5) / N:
-//   π ≈ Σᵢ₌₀ᴺ⁻¹ [ 4 / (1 + xᵢ²) ] × (1/N)
+//   total = Σᵢ₌₀ᴺ⁻¹ popcount(i)
 //
-// Parallelism structure:
-//   - The N subintervals are divided statically across threads via a
-//     parallel reduction loop.
-//   - Each thread accumulates a private partial sum with no shared writes
-//     during computation.
-//   - A single OpenMP reduction combines all partial sums at the end.
-//   - No RNG, no shared state, no sequential state dependency — fully
-//     deterministic and freely vectorizable.
+// Each popcount(i) is fully independent — no state is carried between
+// iterations. The compiler maps __builtin_popcountll directly to the
+// single-cycle hardware `popcnt` instruction on x86. Both GCC and LLVM
+// emit identical machine code for this, so any performance difference
+// between OpenMP and Rust comes purely from the parallelism model.
 //
 // Why this benchmark:
-//   Benchmark 2 (Monte Carlo Pi) used Xorshift64 to generate random
-//   samples. Even with the same RNG on both sides, the sequential
-//   bit-shift dependency chain inside Xorshift64 became the real
-//   bottleneck — making the result sensitive to how GCC vs LLVM compiled
-//   that specific loop, not to the parallelism model.
+//   Previous Pi benchmarks (Monte Carlo and numerical integration) were
+//   bottlenecked by floating-point operations: Xorshift64's bit-shift
+//   dependency chain in Benchmark 2, and the scalar `divsd` instruction
+//   in Benchmark 2-1 (numerical integration). Even with -O3, GCC did not
+//   vectorize either inner loop.
 //
-//   This benchmark removes the RNG entirely. The inner loop is:
-//     x = (i + 0.5) * h
-//     sum += 4.0 / (1.0 + x * x)
-//   Each iteration is fully independent with no state carry-over.
-//   Both compilers can apply AVX2 auto-vectorization freely, making the
-//   comparison a fair test of parallel scaling rather than compiler
-//   optimization of a specific RNG pattern.
+//   Popcount removes all FP computation. The inner loop is:
+//     local += __builtin_popcountll(i)
+//   which compiles to a single `popcnt` instruction per iteration.
+//   There is no division, no RNG, no FP, and no sequential state dependency.
+//   Both compilers generate identical scalar inner loops, making the
+//   comparison a clean test of parallel scaling with uniform integer work.
+//
+// Correctness verification:
+//   For any N that is a power of 2, N = 2^k:
+//     expected = k * 2^(k-1)
+//   For N = 2^33 = 8,589,934,592:
+//     expected = 33 * 2^32 = 141,733,920,768
+//
+// Parallelism structure:
+//   - The range [0, N) is divided statically across threads.
+//   - Each thread accumulates a private uint64_t local sum.
+//   - A single OpenMP reduction combines all thread results at the end.
+//   - No synchronization during the computation phase.
 
-static const double TRUE_PI = 3.14159265358979323846;
+static const long long DEFAULT_N = (1LL << 33); // 8,589,934,592
+
+// Expected answer for N = 2^k: k * 2^(k-1)
+// For N = 2^33: 33 * 4,294,967,296 = 141,733,920,768
+static const uint64_t EXPECTED_BITS = 141733920768ULL;
 
 struct Config {
-    long long intervals = 1000000000LL;
-    int       threads   = 4;
-    int       trials    = 5;
-    bool      csv       = false;
-    bool      warmup    = false;
+    long long n       = DEFAULT_N;
+    int       threads = 4;
+    int       trials  = 5;
+    bool      csv     = false;
+    bool      warmup  = false;
 };
 
 struct Result {
-    double pi_estimate = 0.0;
-    double elapsed_sec = 0.0;
+    uint64_t total_bits = 0;
+    double   elapsed_sec = 0.0;
 };
 
 void print_usage(const char* prog) {
     std::cerr << "Usage: " << prog
-              << " [threads] [intervals] [trials] [--csv] [--warmup]\n";
+              << " [threads] [n] [trials] [--csv] [--warmup]\n";
+    std::cerr << "  n        : total integers to process (default 2^33 = 8589934592)\n";
     std::cerr << "Example:\n";
-    std::cerr << "  " << prog << " 4 1000000000 5 --csv --warmup\n";
+    std::cerr << "  " << prog << " 4 8589934592 5 --csv --warmup\n";
 }
 
 Config parse_args(int argc, char* argv[]) {
@@ -73,9 +84,9 @@ Config parse_args(int argc, char* argv[]) {
         } else {
             ++numeric_count;
             long long value = std::atoll(arg.c_str());
-            if      (numeric_count == 1) cfg.threads   = (int)value;
-            else if (numeric_count == 2) cfg.intervals = value;
-            else if (numeric_count == 3) cfg.trials    = (int)value;
+            if      (numeric_count == 1) cfg.threads = (int)value;
+            else if (numeric_count == 2) cfg.n       = value;
+            else if (numeric_count == 3) cfg.trials  = (int)value;
             else {
                 print_usage(argv[0]);
                 std::exit(EXIT_FAILURE);
@@ -83,7 +94,7 @@ Config parse_args(int argc, char* argv[]) {
         }
     }
 
-    if (cfg.threads <= 0 || cfg.intervals <= 0 || cfg.trials <= 0) {
+    if (cfg.threads <= 0 || cfg.n <= 0 || cfg.trials <= 0) {
         print_usage(argv[0]);
         std::exit(EXIT_FAILURE);
     }
@@ -92,61 +103,65 @@ Config parse_args(int argc, char* argv[]) {
 }
 
 Result run_one_trial(const Config& cfg) {
-    double sum = 0.0;
-    double h   = 1.0 / (double)cfg.intervals;
+    uint64_t total = 0;
 
     double start = omp_get_wtime();
 
-    // Each thread accumulates a private local_sum, combined via reduction.
-    // schedule(static) gives equal contiguous chunks — correct for uniform
-    // cost per interval (all evaluations of 4/(1+x²) take the same time).
-#pragma omp parallel reduction(+:sum) num_threads(cfg.threads)
+    // Each thread accumulates into a private local sum.
+    // schedule(static) divides [0, N) into equal contiguous chunks — correct
+    // because every popcount(i) takes the same time regardless of i.
+#pragma omp parallel reduction(+:total) num_threads(cfg.threads)
     {
-        double local_sum = 0.0;
+        uint64_t local = 0;
 
 #pragma omp for schedule(static)
-        for (long long i = 0; i < cfg.intervals; ++i) {
-            double x = (i + 0.5) * h;
-            local_sum += 4.0 / (1.0 + x * x);
+        for (long long i = 0; i < cfg.n; ++i) {
+            local += (uint64_t)__builtin_popcountll((unsigned long long)i);
         }
 
-        sum += local_sum;
+        total += local;
     }
 
-    double pi  = sum * h;
     double end = omp_get_wtime();
 
     Result r;
-    r.pi_estimate = pi;
+    r.total_bits  = total;
     r.elapsed_sec = end - start;
     return r;
 }
 
 void print_csv_header() {
-    std::cout << "trial,threads,intervals,elapsed_sec,pi_estimate,pi_error\n";
+    std::cout << "trial,threads,n,elapsed_sec,total_bits,expected_bits,correct\n";
 }
 
 void print_csv_row(const Config& cfg, int trial, const Result& r) {
-    double error = r.pi_estimate - TRUE_PI;
+    uint64_t expected = (cfg.n == DEFAULT_N) ? EXPECTED_BITS : 0;
+    int correct = (expected == 0) ? -1 : (r.total_bits == expected ? 1 : 0);
     std::cout << std::fixed << std::setprecision(12);
-    std::cout << trial       << ","
-              << cfg.threads << ","
-              << cfg.intervals << ","
+    std::cout << trial        << ","
+              << cfg.threads  << ","
+              << cfg.n        << ","
               << r.elapsed_sec << ","
-              << r.pi_estimate << ","
-              << error         << "\n";
+              << r.total_bits  << ","
+              << expected      << ","
+              << correct       << "\n";
 }
 
 void print_human_readable(const Config& cfg, int trial, const Result& r) {
-    double error = r.pi_estimate - TRUE_PI;
+    uint64_t expected = (cfg.n == DEFAULT_N) ? EXPECTED_BITS : 0;
+    bool correct = (expected > 0) && (r.total_bits == expected);
     std::cout << std::fixed << std::setprecision(12);
-    std::cout << "=== OpenMP Numerical Integration Pi Benchmark ===\n";
-    std::cout << "trial         : " << trial           << "\n";
-    std::cout << "threads       : " << cfg.threads     << "\n";
-    std::cout << "intervals     : " << cfg.intervals   << "\n\n";
-    std::cout << "elapsed_sec   : " << r.elapsed_sec   << "\n";
-    std::cout << "pi_estimate   : " << r.pi_estimate   << "\n";
-    std::cout << "pi_error      : " << error           << "\n\n";
+    std::cout << "=== OpenMP Popcount Sum Benchmark ===\n";
+    std::cout << "trial         : " << trial            << "\n";
+    std::cout << "threads       : " << cfg.threads      << "\n";
+    std::cout << "n             : " << cfg.n            << "\n\n";
+    std::cout << "elapsed_sec   : " << r.elapsed_sec    << "\n";
+    std::cout << "total_bits    : " << r.total_bits     << "\n";
+    if (expected > 0) {
+        std::cout << "expected_bits : " << expected         << "\n";
+        std::cout << "correct       : " << (correct ? "YES" : "NO") << "\n";
+    }
+    std::cout << "\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -156,8 +171,8 @@ int main(int argc, char* argv[]) {
     omp_set_num_threads(cfg.threads);
 
     if (cfg.warmup) {
-        Config warmup_cfg    = cfg;
-        warmup_cfg.intervals = 1000000;
+        Config warmup_cfg = cfg;
+        warmup_cfg.n = 1 << 20; // 1M items for warmup
         run_one_trial(warmup_cfg);
     }
 
