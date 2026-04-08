@@ -53,11 +53,11 @@ flowchart TD
 
     Q5A -- "Speed and conciseness" --> OPENMP_REDUCE
 
-    OPENMP_REDUCE(["✅ Likely OpenMP\n\nOpenMP expresses reduction\nwith a single clause:\n  #pragma omp parallel reduction(+:sum)\n\nRust requires explicit per-thread\nlocal accumulators, a join step,\nand careful ownership handling.\n\n[TBD — update with Benchmark 3\nhistogram / dot product results]"])
+    OPENMP_REDUCE(["✅ Likely OpenMP\n\nOpenMP expresses array reduction\nwith a single clause:\n  reduction(+: h[:bins])\n\nThe runtime automatically creates\nprivate copies per thread, lets\nthreads write contention-free,\nthen merges at the end.\nThe programmer writes nothing extra.\n\nBenchmark 3 (histogram, N=2²⁶,\n256 bins, Strategy A):\n  1T–16T: tie with Rust (< 2% diff)\n  32T: OpenMP 5% faster\n  64T: OpenMP 12% faster (thread pool)\n  Both scale at 98–100% efficiency\n  from 1T to 16T.\n\nRust requires ~10 extra lines:\nexplicit private Vec per thread,\nexplicit partition, explicit merge."])
 
     Q5A -- "Explicit control\nand auditability" --> RUST_REDUCE
 
-    RUST_REDUCE(["✅ Likely Rust\n\nRust forces the programmer to\nexplicitly state what is shared,\nwhat is private, and how\nresults are combined.\n\nThe borrow checker verifies\ncorrectness at compile time.\nNo hidden sharing bugs.\n\n[TBD — update with Benchmark 3]"])
+    RUST_REDUCE(["✅ Likely Rust\n\nRust forces the programmer to\nexplicitly state what is shared,\nwhat is private, and how\nresults are combined.\n\nFor histogram reduction:\n  allocate Vec<u64> per thread\n  each thread fills its own copy\n  explicit merge loop after join\n\nThe borrow checker verifies at\ncompile time that no thread\naccesses another thread's private\nhistogram. No hidden sharing.\n\nBenchmark 3 confirms: same\nperformance as OpenMP at 1T–16T.\nTrade-off is ~10 extra lines of\ncode for full auditability and\ncompile-time safety guarantees."])
 
     Q6{"Q6 — Scalability\n\nDoes your system need to scale\nto many cores efficiently?\n\neg. Will you run at 16, 32,\nor more threads and expect\nnear-linear speedup?"}
 
@@ -102,7 +102,7 @@ This table will be filled in as benchmarks are completed.
 | Question | Key metric | Benchmark | Status |
 |---|---|---|---|
 | Q3 — Sync frequency | Fork/join overhead vs thread count | Benchmark 1 | ✅ Complete |
-| Q5 — Reduction workloads | Reduction LOC, runtime, correctness effort | Benchmark 3 | 🔲 Pending |
+| Q5 — Reduction workloads | Reduction LOC, runtime, correctness effort | Benchmark 3 | ✅ Complete |
 | Q6A — Sync overhead at scale | Barrier cost, speedup curves | Benchmark 1 + 2-1 | ✅ Complete |
 | Q6A — Load imbalance | Runtime under uneven work, scheduling | Benchmark 4 | 🔲 Pending |
 | Q4 — Custom scheduling | LOC, flexibility, runtime comparison | Benchmark 4 | 🔲 Pending |
@@ -110,9 +110,9 @@ This table will be filled in as benchmarks are completed.
 
 ---
 
-## Key Findings So Far (Benchmark 1)
+## Key Findings (Benchmark 1 — Thread Overhead)
 
-These facts are established and directly feed into the flowchart:
+These facts are established from the thread overhead microbenchmark (fork/join, barrier, atomic, 2–8 threads):
 
 1. **OpenMP fork/join overhead is 5–16× lower than Rust** at 2–8 threads.
    → Drives Q3: if sync frequency is high, OpenMP wins.
@@ -136,24 +136,77 @@ These facts are established and directly feed into the flowchart:
 
 ---
 
-## Key Findings (Benchmark 2-1 — Embarrassingly Parallel Scalability)
+## Key Findings (Benchmark 2 — Monte Carlo Pi)
+
+These facts are established from the Monte Carlo Pi benchmark (Xorshift64 RNG, 1B samples, 1–64 threads):
+
+7. **RNG choice introduced a 3× artificial performance gap.** The original comparison used mt19937_64 (C++ stdlib) vs Xorshift64 (Rust). Unifying both to Xorshift64 collapsed the gap to ~1.35×. Confounding factors in the inner loop must be eliminated before comparing parallel models.
+   → Lesson: benchmark design determines what you are actually measuring. A 3× gap from RNG choice was masking the true parallelism comparison.
+
+8. **With unified RNG, OpenMP is ~1.35× faster at all thread counts — a constant multiplier.**
+   A constant ratio across all thread counts means the difference is entirely in single-thread code generation (Xorshift64's sequential dependency chain preventing SIMD), not in parallelism quality. Both models scale at the same rate.
+   → Precursor to Benchmark 2-1: the FP and RNG inner loop must be replaced with a bias-free workload to isolate the parallelism model.
+
+---
+
+## Key Findings (Benchmark 2-1 — Embarrassingly Parallel Scalability, Popcount)
 
 These facts are established from the popcount benchmark (N = 2³³, 1–64 threads, both implementations clean):
 
-7. **Both OpenMP and Rust scale at near-identical efficiency for compute-bound embarrassingly parallel work.**
+9. **Both OpenMP and Rust scale at near-identical efficiency for compute-bound embarrassingly parallel work.**
    Both reach 97–100% parallel efficiency from 1T to 16T. Neither parallelism model has a structural scalability advantage when synchronization is absent.
    → Q6 confirmed: if scalability is the concern, the decision must be made on other axes.
 
-8. **Rust/LLVM is ~1.13–1.15× faster than C++/GCC from 1T to 16T.**
-   The gap is a **constant multiplier** — it does not change as thread count scales. This proves the difference is in single-thread code generation (LLVM's 8× loop unrolling vs GCC's scalar loop), not in the parallelism model. The scaling curves are parallel lines.
-   → Reinforces Q7/Q8: for pure throughput on a single machine, LLVM produces better code, but this does not affect the parallel scaling decision.
+10. **Rust/LLVM is ~1.13–1.15× faster than C++/GCC from 1T to 16T.**
+    The gap is a **constant multiplier** — it does not change as thread count scales. This proves the difference is in single-thread code generation (LLVM's 8× loop unrolling vs GCC's scalar loop), not in the parallelism model.
+    → Reinforces Q7/Q8: LLVM produces better code for this workload, but this does not affect the parallel scaling decision.
 
-9. **At 64 threads, OpenMP reverses the advantage and runs 4% faster than Rust.**
-   With 64 threads each doing only ~250ms of compute, Rust's cost of spawning 64 fresh OS threads per trial (~3ms total) erases its inner-loop speed advantage. OpenMP's persistent thread pool wakes up at nearly zero cost.
-   → Reinforces Q3: fine-grained or high-thread-count parallelism favors OpenMP's thread pool model. The Q3 `OPENMP_OVERHEAD` outcome is now supported by both Benchmark 1 (microsecond fork/join) and Benchmark 2-1 (64T reversal at 250ms/thread).
+11. **At 64 threads, OpenMP reverses the advantage and runs 4% faster than Rust.**
+    With 64 threads each doing only ~250ms of compute, Rust's cost of spawning 64 fresh OS threads per trial (~3ms total) erases its inner-loop speed advantage. OpenMP's persistent thread pool wakes up at nearly zero cost.
+    → Reinforces Q3: fine-grained or high-thread-count parallelism favors OpenMP's thread pool model.
 
-10. **Neither compiler uses AVX2 SIMD for popcount on crunchy.**
-    AVX-512 VPOPCNTDQ is required for hardware-vectorized popcount; the cluster does not have it. Both compilers emit scalar `popcnt`. The LLVM advantage comes from loop unrolling and multiple accumulators, not SIMD width.
+12. **Neither compiler uses AVX2 SIMD for popcount on crunchy.**
+    AVX-512 VPOPCNTDQ is not available on the cluster. Both binaries use scalar `popcnt`. LLVM's advantage comes from 8× loop unrolling and multiple accumulators, not SIMD width.
+
+---
+
+## Key Findings (Benchmark 2-2 — Rayon vs std::thread)
+
+These facts are established from repeating the popcount benchmark with Rayon (N = 2³³, 1–64 threads):
+
+13. **Switching from bare `std::thread` to Rayon does not fix the 64T reversal — it makes it larger.**
+    OpenMP leads Rayon by 7.5% at 64T vs only 4% over std::thread. Rayon's work-stealing bookkeeping across 64 workers compounds the thread management overhead.
+    → The 64T reversal is not caused by thread spawn cost alone; it is a structural property of OpenMP's persistent pool vs any fresh-thread or work-stealing model.
+
+14. **For uniform workloads, bare `std::thread` with static partitioning beats Rayon.**
+    std::thread is 3–5% faster than Rayon at every thread count from 1T to 32T. LLVM generates an 8× unrolled loop inside the bare thread closure vs only 4× inside Rayon's work-stealing closure. Work-stealing adds scheduler overhead that buys nothing when every element costs the same.
+    → Rayon's advantage is for **irregular** workloads where load imbalance exists. For perfectly uniform work, static partitioning is always better.
+
+15. **The performance ranking for uniform workloads is: std::thread > Rayon > OpenMP (1T–32T); OpenMP > std::thread > Rayon (64T).**
+    All three scale at equivalent efficiency. The differences are in single-thread code quality and thread management overhead, not in parallelism model quality.
+
+---
+
+## Key Findings (Benchmark 3 — Parallel Histogram, Reduction Workloads)
+
+These facts are established from the histogram benchmark (N = 2²⁶, 256 bins, Strategy A, 1–64 threads):
+
+16. **Algorithm design matters more than language choice.**
+    Strategy B (shared atomics) made performance 4× *worse* at 64 threads. Strategy A (private histograms + merge) gives 35× speedup at 64T. Choosing the right reduction pattern is the first decision — language comes second.
+
+17. **Performance is a tie at 1T–16T.** OpenMP and Rust differ by less than 2% at every thread count from 1T to 16T. Both scale at 98–100% parallel efficiency. The Q5A decision is entirely about code, not runtime.
+    → Q5A confirmed: the choice between OpenMP and Rust for reduction workloads is a programmability decision, not a performance decision.
+
+18. **OpenMP's `reduction` clause expresses the entire pattern in one line.**
+    The programmer writes a serial-looking loop; the runtime handles private allocation, contention-free writes, and merge invisibly. Rust requires ~10 explicit lines for the same behavior.
+    → Drives `OPENMP_REDUCE`: for teams that prioritize conciseness and development speed, OpenMP wins on this axis.
+
+19. **Rust's explicit model gives compile-time auditability.**
+    Every decision is visible: what each thread owns, what it writes, and when the merge happens. The borrow checker verifies at compile time that no thread accesses another's private data.
+    → Drives `RUST_REDUCE`: for long-lived systems where correctness and code review clarity matter, Rust's verbosity is a feature.
+
+20. **The 32T→64T cliff is a memory bandwidth wall, not a parallelism problem.**
+    Both languages collapse from ~94% efficiency at 32T to ~50% at 64T. The 256MB input array saturates memory bandwidth at ~32 threads. This is a hardware constraint that neither language can overcome.
 
 ---
 
