@@ -38,11 +38,11 @@ flowchart TD
 
     Q4 -- "Yes — one of those\ncovers my use case" --> OPENMP_SCHED
 
-    OPENMP_SCHED(["✅ Likely OpenMP\n\nOpenMP schedule clauses handle\ncommon load-balancing patterns\nwith a single pragma.\n\nRust requires a manual work queue\n(channel or mutex-protected deque)\nwhich is significantly more code.\n\n[TBD — update with Benchmark 4\nirregular workload results]"])
+    OPENMP_SCHED(["✅ Likely OpenMP\n\nOpenMP schedule clauses handle\ncommon load-balancing patterns\nwith a single pragma.\n\nBenchmark 4 (prime testing, N=1M):\n  Dynamic vs static speedup:\n  4T:  1.52× (OMP), 1.35× (Rust)\n  8T:  1.39× (OMP), 1.38× (Rust)\n  32T: 1.29× (OMP), 1.48× (Rust)\n  Benefit is consistent and equal\n  across both languages.\n\n  Scheduling gap: 38–40%\n  Language gap (same schedule): 0–4%\n\nRust equivalent requires\n  Arc<AtomicU64> + fetch_add (~15 lines)\nRayon is 1 line but regresses at 64T\n  (2.0× behind OMP dynamic).\n\nAt 1T–32T: Rust dynamic ≈ OMP dynamic\n  (within 2–4%). Same perf, more code."])
 
     Q4 -- "No — I need custom\ntask priorities, stealing,\nor non-standard partitioning" --> RUST_SCHED
 
-    RUST_SCHED(["✅ Choose Rust\n\nRust gives full programmer control\nover thread lifecycle and work\ndistribution. You can implement\nany scheduling strategy explicitly.\n\nOpenMP exposes no API to control\nthe internal thread pool or\nimplement custom scheduling.\nThis is a programmer control\nlimitation of OpenMP.\n\n[TBD — update with Benchmark 4]"])
+    RUST_SCHED(["✅ Choose Rust\n\nRust gives full programmer control\nover thread lifecycle and work\ndistribution. You can implement\nany scheduling strategy explicitly.\n\nOpenMP exposes no API to control\nthe internal thread pool or\nimplement custom scheduling.\n\nBenchmark 4 confirms:\n  Rust dynamic (Arc<AtomicU64>)\n  matches OMP dynamic at 1T–32T:\n    ratio = 0.97–1.04×\n  At 32T Rust dynamic (0.016s)\n  is 3% FASTER than OMP (0.017s).\n\n  Rayon par_iter matches OMP\n  dynamic at 1T–16T (1.01–1.07×)\n  but at 64T Rayon (0.024s) is\n  slower than Rust static (0.017s).\n  Explicit AtomicU64: 1.16× at 64T.\n\nFor custom priorities, non-standard\npartitioning, or explicit lifecycle\ncontrol: Rust is the only option.\nOpenMP cannot expose its internals."])
 
     Q5{"Q5 — Reduction workloads\n\nDoes your workload involve\nheavy reduction patterns?\n\neg. summing across threads,\nbuilding a shared histogram,\naccumulating partial results"}
 
@@ -104,8 +104,8 @@ This table will be filled in as benchmarks are completed.
 | Q3 — Sync frequency | Fork/join overhead vs thread count | Benchmark 1 | ✅ Complete |
 | Q5 — Reduction workloads | Reduction LOC, runtime, correctness effort | Benchmark 3 | ✅ Complete |
 | Q6A — Sync overhead at scale | Barrier cost, speedup curves | Benchmark 1 + 2-1 | ✅ Complete |
-| Q6A — Load imbalance | Runtime under uneven work, scheduling | Benchmark 4 | 🔲 Pending |
-| Q4 — Custom scheduling | LOC, flexibility, runtime comparison | Benchmark 4 | 🔲 Pending |
+| Q6A — Load imbalance | Runtime under uneven work, scheduling | Benchmark 4 | ✅ Complete |
+| Q4 — Custom scheduling | LOC, flexibility, runtime comparison | Benchmark 4 | ✅ Complete |
 | Q6 — Scalability | Speedup and efficiency vs thread count | Benchmark 2-1 | ✅ Complete |
 
 ---
@@ -207,6 +207,56 @@ These facts are established from the histogram benchmark (N = 2²⁶, 256 bins, 
 
 20. **The 32T→64T cliff is a memory bandwidth wall, not a parallelism problem.**
     Both languages collapse from ~94% efficiency at 32T to ~50% at 64T. The 256MB input array saturates memory bandwidth at ~32 threads. This is a hardware constraint that neither language can overcome.
+
+---
+
+## Key Findings (Benchmark 4 — Irregular Workload, Prime Testing)
+
+These facts are established from the prime testing benchmark (N = 1,000,000, 5 strategies, 1–64 threads):
+
+21. **Static scheduling has identical load-imbalance penalty in both languages.**
+    With clean data (early-morning low-load run), Rust static and OMP static track each other within ±11% at every thread count:
+      8T:  OMP static = 0.077s, Rust static = 0.077s (tied exactly)
+      64T: OMP static = 0.018s, Rust static = 0.017s (Rust 6% faster)
+    Both achieve 43% parallel efficiency at 64T. The load imbalance bottleneck is a property of the algorithm, not the language.
+    → Confirms Q6A: for irregular workloads, static scheduling is the wrong choice regardless of language.
+
+22. **Dynamic scheduling delivers 1.3–1.5× speedup over static, identically in both languages.**
+    OMP dynamic/static: 1.52× at 4T, 1.39× at 8T, 1.29× at 32T.
+    Rust dynamic/static: 1.35× at 4T, 1.38× at 8T, 1.48× at 32T.
+    The benefit is consistent and nearly equal between languages. Scheduling mechanism (pragma vs. AtomicU64) does not change how much imbalance is corrected — only how much code is needed.
+    → Confirms Q4 (OPENMP_SCHED): OpenMP's one-keyword change delivers the same benefit as ~15 lines of explicit Rust code.
+
+23. **Rust dynamic matches OMP dynamic within 2–4% from 1T to 32T.**
+    Rust dynamic: 0.446s, 0.220s, 0.110s, 0.056s, 0.029s, 0.016s at 1T/2T/4T/8T/16T/32T.
+    OMP dynamic:  0.432s, 0.217s, 0.109s, 0.055s, 0.028s, 0.017s at same counts.
+    At 32T, Rust dynamic (0.016s) is 3% *faster* than OMP dynamic (0.017s).
+    The explicit `Arc<AtomicU64>` counter achieves the same load-balancing effect as OpenMP's internal work queue.
+    → Confirms Q4 (RUST_SCHED): Rust can match OMP dynamic, but requires ~15 lines vs. one keyword.
+
+24. **Rayon matches OMP dynamic at 1T–16T (1.01–1.07×), then regresses sharply.**
+    Rayon: 0.436s, 0.219s, 0.111s, 0.057s, 0.030s at 1T–16T — within 7% of OMP dynamic.
+    At 32T: Rayon = 0.020s vs OMP dynamic 0.017s → 1.18× behind.
+    At 64T: Rayon = 0.024s vs OMP dynamic 0.012s → **2.0× behind**.
+    At 64T, Rayon (0.024s) is also **41% slower than Rust static (0.017s)** — work-stealing overhead on this 8-NUMA-node machine exceeds any load-balancing benefit at N=1M, 64T.
+    → Nuance for Q4: Rayon is the highest-productivity option at 1T–16T (1 line, near-optimal). Explicit dynamic (AtomicU64) is better at 32T–64T on NUMA hardware.
+
+25. **Scheduling gap (38–40%) vastly exceeds language gap (0–4%).**
+    At 8T (fully clean, all 5 strategies populated):
+      OMP dynamic: 0.055s (best)
+      Rust dynamic: 0.056s (1.02× — language gap)
+      Rust rayon:  0.057s (1.04× — language gap)
+      OMP static:  0.077s (1.40× — scheduling gap)
+      Rust static: 0.077s (1.40× — scheduling gap, same as OMP!)
+    The scheduling gap (40%) is ~10× the language gap (2–4%). For irregular workloads: choose the schedule first, the language second.
+    → Reinforces Q4 over Q7/Q8.
+
+26. **Previously anomalous Rust static 64T results were cluster load, not NUMA.**
+    Earlier runs showed Rust static 64T = 0.165–0.304s (all 5 trials, 10–17× slower than expected).
+    Early-morning low-load run 2 shows Rust static 64T = **0.017s** (five trials: 0.017, 0.017, 0.017, 0.017, 0.018).
+    This definitively rules out NUMA effects or structural load imbalance as the cause — both are reproducible properties that would persist even at low cluster load. The anomaly was pure cluster interference.
+    OpenMP's persistent pool produced 0 contaminated cells in all runs. Rust's fresh-thread spawning is more sensitive to cluster load, but produces identical performance when the cluster is quiet.
+    → Reinforces Q3: OpenMP's persistent pool is a reliability advantage on shared hardware, not just a latency advantage.
 
 ---
 
