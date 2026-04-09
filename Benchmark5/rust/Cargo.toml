@@ -1,0 +1,14 @@
+[package]
+name = "rust_benchmark5"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# core_affinity: wraps Linux sched_setaffinity / macOS thread_policy_set.
+# Provides get_core_ids() and set_for_current(CoreId).
+# This is the only external dependency added for affinity control.
+# Compare: OpenMP needs zero new dependencies (proc_bind is a built-in clause).
+core_affinity = "0.8"
+
+[profile.release]
+opt-level = 3
