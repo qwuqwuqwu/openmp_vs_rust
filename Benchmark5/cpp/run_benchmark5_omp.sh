@@ -3,8 +3,14 @@
 # Builds openmp_benchmark5.cpp then runs all three proc_bind strategies
 # at 8, 16, 32, 64 threads.
 #
-# Affinity is controlled entirely via the proc_bind clause in the source —
-# no OMP_PROC_BIND or OMP_PLACES env vars are set by this script.
+# Affinity strategy is controlled via the proc_bind clause in the source code.
+# OMP_PLACES=cores is set here to define "places" as physical cores, which is
+# required for proc_bind(spread/close) to map threads to NUMA-local cores.
+#
+# Environment variable scope:
+#   export only affects this script process and its child processes.
+#   Other users on the cluster are completely unaffected — env vars are
+#   process-local on Linux and never cross process boundaries.
 #
 # Output: ../results_omp_default.csv
 #         ../results_omp_spread.csv
@@ -18,6 +24,12 @@ N=134217728          # 128 M elements = 1 GB
 TRIALS=5
 THREADS_LIST=(8 16 32 64)
 STRATEGIES=(default spread close)
+
+# Define places as physical cores so proc_bind(spread/close) maps threads
+# to NUMA-local cores rather than the default (implementation-defined) places.
+# This variable is inherited by all child processes (the benchmark binary).
+# It does not affect any other user's session or process on this machine.
+export OMP_PLACES=cores
 
 echo "=== Building $SRC ==="
 g++ -O3 -fopenmp -std=c++17 -o "$BIN" "$SRC"
