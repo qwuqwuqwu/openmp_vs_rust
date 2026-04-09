@@ -30,7 +30,7 @@ flowchart TD
 
     Q3 -- "High frequency —\nfine-grained fork/join,\nmillions of regions per second" --> OPENMP_OVERHEAD
 
-    OPENMP_OVERHEAD(["✅ Choose OpenMP\n\nBenchmark 1 result:\nOpenMP fork/join overhead is\n5–16× lower than Rust at\n2–8 threads on crunchy.\n\nOpenMP threads spin-wait between\nregions — wake-up is nearly free.\nRust Barrier uses condvar + OS\nsyscall — latency scales with\nthread count.\n\nAt fine-grained parallelism,\nthis gap dominates total runtime."])
+    OPENMP_OVERHEAD(["✅ Choose OpenMP\n\nBenchmark 1 result (crunchy5, 1–32T):\nOpenMP fork/join overhead:\n  1T:  4.8 µs   Rust: 6.2 µs  → 1.3×\n  2T:  6.2 µs   Rust: 19.3 µs → 3.1×\n  4T:  5.2 µs   Rust: 36.2 µs → 7.0×\n  8T:  6.1 µs   Rust: 62.0 µs → 10.1×\n  16T: 8.9 µs   Rust: 126 µs  → 14.1×\n  32T: 18.1 µs  Rust: ~343 µs → ~19×\n\nOpenMP threads spin-wait between\nregions — wake-up is nearly free.\nRust Barrier uses condvar + OS\nsyscall — latency scales with T.\n\nAt fine-grained parallelism,\nthis gap dominates total runtime."])
 
     Q3 -- "Low frequency —\ncoarse-grained bodies,\nthe parallel work itself\ntakes most of the time" --> Q5
 
@@ -67,7 +67,7 @@ flowchart TD
 
     Q6A -- "Synchronization overhead\nis the bottleneck" --> OPENMP_SCALE
 
-    OPENMP_SCALE(["✅ Likely OpenMP\n\nBenchmark 1 shows OpenMP\nbarrier and fork/join overhead\nscales far better than Rust's\ncondvar-based primitives.\n\nAt 8 threads:\n  OpenMP barrier: ~4 µs\n  Rust barrier:   ~55 µs\n\nBenchmark 2-1 (popcount, N=2³³):\nAt 64 threads, OpenMP is 4% faster\nthan Rust despite a slower inner\nloop — OpenMP's persistent thread\npool wakes up instantly while Rust\nspawns 64 fresh OS threads each\ntrial (~3 ms overhead per run).\n\nCrossover: 32T→64T, where per-thread\nwork drops to ~250 ms and thread\nmanagement overhead becomes visible."])
+    OPENMP_SCALE(["✅ Likely OpenMP\n\nBenchmark 1 (crunchy5, 1–32T):\nBarrier overhead — OMP vs Rust:\n  1T:  3.0 µs vs 3.0 µs  → 1.0× (tied)\n  2T:  3.7 µs vs 9.6 µs  → 2.6×\n  4T:  2.1 µs vs 18.0 µs → 8.5×\n  8T:  2.3 µs vs 29.4 µs → 12.8×\n  16T: 4.4 µs vs 62.0 µs → 14.2×\n  32T: 9.4 µs vs ~130 µs → 13.8×\n\nOMP barrier plateaus at 13–14×\nadvantage from 8T onward.\nRust condvar-based Barrier\nscales linearly with thread count.\n\nBenchmark 2-1 (popcount, N=2³³):\nAt 64 threads, OpenMP is 4% faster\nthan Rust despite a slower inner\nloop — OpenMP's persistent thread\npool wakes up instantly while Rust\nspawns 64 fresh OS threads each\ntrial (~3 ms overhead per run).\n\nCrossover: 32T→64T, where per-thread\nwork drops to ~250 ms and thread\nmanagement overhead becomes visible."])
 
     Q6A -- "Load imbalance\nis the bottleneck" --> OPENMP_SCHED
 
@@ -101,9 +101,9 @@ This table will be filled in as benchmarks are completed.
 
 | Question | Key metric | Benchmark | Status |
 |---|---|---|---|
-| Q3 — Sync frequency | Fork/join overhead vs thread count | Benchmark 1 | ✅ Complete |
+| Q3 — Sync frequency | Fork/join overhead vs thread count (1–32T) | Benchmark 1 (re-run) | ✅ Complete |
 | Q5 — Reduction workloads | Reduction LOC, runtime, correctness effort | Benchmark 3 | ✅ Complete |
-| Q6A — Sync overhead at scale | Barrier cost, speedup curves | Benchmark 1 + 2-1 | ✅ Complete |
+| Q6A — Sync overhead at scale | Barrier cost 1–32T, speedup curves | Benchmark 1 (re-run) + 2-1 | ✅ Complete |
 | Q6A — Load imbalance | Runtime under uneven work, scheduling | Benchmark 4 | ✅ Complete |
 | Q4 — Custom scheduling | LOC, flexibility, runtime comparison | Benchmark 4 | ✅ Complete |
 | Q6 — Scalability | Speedup and efficiency vs thread count | Benchmark 2-1 | ✅ Complete |
@@ -112,16 +112,20 @@ This table will be filled in as benchmarks are completed.
 
 ## Key Findings (Benchmark 1 — Thread Overhead)
 
-These facts are established from the thread overhead microbenchmark (fork/join, barrier, atomic, 2–8 threads):
+These facts are established from the thread overhead microbenchmark (fork/join, barrier, atomic, 1–32 threads, crunchy5 early-morning low-load run):
 
-1. **OpenMP fork/join overhead is 5–16× lower than Rust** at 2–8 threads.
-   → Drives Q3: if sync frequency is high, OpenMP wins.
+1. **OpenMP fork/join overhead is 1.3–19× lower than Rust** from 1T to 32T, with the gap growing with thread count.
+   1T: 4.8 µs vs 6.2 µs (1.3×) — 2T: 6.2 µs vs 19.3 µs (3.1×) — 4T: 5.2 µs vs 36.2 µs (7.0×) — 8T: 6.1 µs vs 62.0 µs (10.1×) — 16T: 8.9 µs vs 126 µs (14.1×) — 32T: 18.1 µs vs ~343 µs (~19×).
+   OpenMP: 3.8× growth from 1T to 32T. Rust: ~55× growth.
+   → Drives Q3: if sync frequency is high, OpenMP wins. The gap is decisive and grows monotonically.
 
-2. **Barrier overhead is equal at 1 thread, then diverges sharply.**
-   OpenMP: ~2–4 µs. Rust: ~16–55 µs at 2–8 threads.
-   → Reinforces Q6A: if synchronization is the bottleneck, OpenMP scales better.
+2. **Barrier overhead is equal at 1 thread, then diverges sharply and plateaus.**
+   1T: tied (~3.0 µs each). 2T: 2.6×. 4T: 8.5×. 8T: 12.8×. 16T: 14.2×. 32T: 13.8×.
+   OpenMP barrier: 2.1–9.4 µs (1T–32T). Rust barrier: 3.0–130 µs.
+   Ratio plateaus at ~14× from 8T onward — both scale, but with a stable ~14× cost multiplier.
+   → Reinforces Q6A: if synchronization is the bottleneck, OpenMP scales better by ~14× at 8T+.
 
-3. **Atomic increment cost is identical** (~24–102 ns on both sides, within noise).
+3. **Atomic increment cost is essentially identical** (38–107 ns OMP, 47–103 ns Rust, no consistent winner at any thread count).
    → Neither language has an advantage on hardware atomics.
 
 4. **OpenMP provides no programmer control over thread lifecycle.**
@@ -133,6 +137,9 @@ These facts are established from the thread overhead microbenchmark (fork/join, 
 
 6. **Rust's borrow checker caught all sharing bugs at compile time.** No runtime debugging needed.
    → Drives Q1/Q8: for safety-critical or long-lived systems, Rust's upfront cost is justified.
+
+7. **OMP's persistent spin-pool produces 0 contaminated cells across all B1 trials.** Rust's condvar-based barrier produced contaminated cells even in low-load conditions at T=16 and T=32 (2–3 out of 5 trials). When threads sleep, OS scheduler preemptions can stall the entire barrier.
+   → Reinforces Q3: OpenMP's spin-waiting is a reliability advantage on shared hardware, not just a latency advantage.
 
 ---
 
