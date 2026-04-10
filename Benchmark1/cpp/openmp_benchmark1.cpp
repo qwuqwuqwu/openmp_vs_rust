@@ -66,7 +66,7 @@ Config parse_args(int argc, char* argv[]) {
 }
 
 double benchmark_parallel_region(int repetitions, int threads) {
-    volatile int sink = 0;
+    volatile int sink = 0; // prevent region from being optimized away
     double start = omp_get_wtime();
 
     for (int i = 0; i < repetitions; ++i) {
