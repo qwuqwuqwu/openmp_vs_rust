@@ -290,3 +290,21 @@ The 64T result adds another data point consistent with earlier findings. OpenMP'
 - [x] Head-to-head comparison documented
 - [x] Q5/Q5A flowchart nodes updated
 - [ ] Benchmark 4: Irregular workloads (prime testing) — Q4 / load imbalance branch
+
+---
+
+## 12. Summary
+
+| Metric | Winner | Notes |
+|---|---|---|
+| Performance at 1T–16T | **Tie** | < 2% difference at every count; within measurement noise |
+| Performance at 32T–64T | **OpenMP** | 5% faster at 32T, 12% faster at 64T — persistent thread pool advantage |
+| Code conciseness | **OpenMP** | `reduction(+: h[:bins])` is the entire pattern; Rust requires ~10 explicit lines |
+| Code auditability | **Rust** | Every thread's ownership, write scope, and merge step is explicit and compiler-verified |
+| Compile-time safety | **Rust** | Borrow checker prevents any thread from accidentally accessing another's private histogram |
+| Algorithm choice impact | **N/A** | Strategy B (shared atomics) is 4× slower at 64T — algorithm dominates language choice |
+| Memory bandwidth wall | **Tie** | Both collapse from ~94% efficiency at 32T to ~52% at 64T; hardware constraint, not language |
+| Correctness | **Tie** | Both return exact count = N at every thread count across all trials |
+| Thread pool advantage | **OpenMP** | 5–12% lead at 32T–64T comes from zero thread management overhead, not algorithm |
+
+**Bottom line:** For reduction workloads, the decision between OpenMP and Rust is about code style, not performance. Both are a tie at 1T–16T. OpenMP wins by 5–12% at 32T–64T from its thread pool — the same mechanism as B2-1. The real differentiator is programmability: OpenMP's `reduction` clause handles private copy, contention-free write, and merge invisibly in one line; Rust makes all three steps explicit but lets the borrow checker verify them at compile time.

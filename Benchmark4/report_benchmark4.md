@@ -172,3 +172,20 @@ The 10–17× inflation in earlier runs was purely cluster load. When the cluste
 | Is Rayon justified for irregular work? | **Yes at 1T–16T (within 7%). No at 32T–64T (regresses to 2× behind)** |
 | At 64T, which Rust strategy is best? | **Rust dynamic (0.014s) — explicit AtomicU64 beats Rayon (0.024s) by 71%** |
 | Does language matter more than scheduling? | **No — scheduling gap (38–40%) >> language gap (0–4%)** |
+
+---
+
+| Metric | Winner | Notes |
+|---|---|---|
+| Static scheduling efficiency | **Tie** | OMP static = Rust static at all clean thread counts; same load-imbalance penalty |
+| Dynamic scheduling benefit | **Tie** | Both gain 1.3–1.5× over static; dynamic is equally effective in both languages |
+| Dynamic scheduling performance | **Tie / OMP** | Rust dynamic within 2–4% of OMP dynamic (1T–32T); at 32T Rust is 3% *faster* |
+| Ease of enabling dynamic | **OpenMP** | 1 keyword (`dynamic`) vs ~15 lines of explicit `Arc<AtomicU64>` in Rust |
+| Rayon at low-to-mid threads | **Tie** | Within 7% of OMP dynamic at 1T–16T; one line of code |
+| Rayon at 64T | **OpenMP** | Rayon 2× slower than OMP dynamic at 64T; work-stealing overhead exceeds benefit |
+| Best Rust strategy at 64T | **Rust dynamic** | Explicit `AtomicU64` (0.014s) beats Rayon (0.024s) by 71% at 64T |
+| Custom / extensible scheduling | **Rust** | OMP locked to 3 built-in modes; Rust can implement any priority, steal policy, or partition |
+| Compile-time safety | **Rust** | Work-queue counter is `Arc<AtomicU64>` — sharing is explicit and compiler-checked |
+| Scheduling vs language priority | **Schedule first** | Choosing dynamic over static matters ~10× more than choosing Rust over OMP |
+
+**Bottom line:** For irregular workloads, fix the scheduling strategy first and the language second. After choosing dynamic scheduling, OpenMP and Rust perform within 2–4% of each other. The cost of getting there differs greatly: one keyword in OpenMP vs ~15 lines in Rust. Rayon is the one-liner option but regresses badly at 64T on NUMA hardware. For systems requiring custom scheduling beyond the three OMP built-in modes, Rust is the only viable choice.

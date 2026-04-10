@@ -460,3 +460,21 @@ These results update the decision flowchart at:
 - [ ] Consider `taskset` pinning to prevent scheduler interference at low thread counts
 - [ ] Benchmark 3: reduction workloads (histogram, dot product)
 - [ ] Benchmark 4: irregular workloads and custom scheduling
+
+---
+
+## 15. Summary
+
+| Metric | Winner | Notes |
+|---|---|---|
+| Single-thread throughput | **OpenMP** | GCC+Xorshift64: ~1.35× faster than Rust/LLVM at all thread counts |
+| Parallel scalability (1T–32T) | **Tie** | Both scale at ~84–93% efficiency; scaling curves are parallel |
+| 64T performance | **OpenMP** | Faster because problem fits in 64T; thread spawn cost not yet dominant |
+| Code conciseness | **OpenMP** | `#pragma omp parallel for reduction(+:count)` vs explicit partition+reduce in Rust |
+| Compile-time safety | **Rust** | Borrow checker prevents data-race bugs; OMP `reduction` clause can be omitted silently |
+| Cluster interference immunity | **Tie** | Both contaminated at 1T–16T on shared cluster; clean at 32T–64T |
+| Inner-loop code quality | **OpenMP** | GCC generates fewer instructions for this specific RNG; advantage is workload-specific |
+| Result validity | **Tie** | Both converge to π ≈ 3.1416 at all sample sizes |
+| Cross-run reproducibility | **OpenMP** | OMP consistent across runs; Rust varies due to scheduler placement of fresh threads |
+
+**Bottom line:** OpenMP's ~1.35× throughput advantage in Benchmark 2 is a GCC+Xorshift64 compiler artifact — the GCC inner loop happens to be shorter for this specific RNG dependency chain. Both models scale identically. The language gap does not grow with thread count; the decision should be made on other axes (safety, code clarity, scheduling flexibility).

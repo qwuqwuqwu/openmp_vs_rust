@@ -347,3 +347,21 @@ For integer compute-bound workloads with no memory pressure, the bottleneck at h
 - [x] Flowchart nodes Q6, Q3, Q6A updated
 - [ ] Benchmark 3: Reduction workloads (histogram or dot product)
 - [ ] Benchmark 4: Irregular workloads (prime testing)
+
+---
+
+## 13. Summary
+
+| Metric | Winner | Notes |
+|---|---|---|
+| Single-thread throughput | **Rust** | LLVM 8× loop unrolling: 1.13–1.15× faster than GCC at 1T |
+| Parallel scalability (1T–32T) | **Tie** | Both reach 97–100% parallel efficiency; scaling curves identical |
+| 64T performance | **OpenMP** | 4% faster — thread spawn cost (~3ms for 64 threads) erases Rust's inner-loop advantage |
+| Inner-loop code quality | **Rust** | LLVM unrolls 8×, pre-caches accumulator; GCC emits scalar single-accumulator loop |
+| Constant-multiplier gap | **Rust** | 1.13–1.15× advantage is flat across all thread counts (1T–32T) — purely single-thread quality |
+| Code conciseness | **OpenMP** | One `#pragma omp parallel for` with implicit reduction vs explicit chunk partitioning in Rust |
+| Compile-time safety | **Rust** | Ownership rules prevent data-race on the accumulator at compile time |
+| Measurement cleanliness | **Rust** | Zero contamination 1T–32T; fresh-thread spawn isolates each trial from pool noise |
+| Thread management overhead | **OpenMP** | Persistent pool costs zero at 64T; Rust pays ~3ms per trial to spawn 64 OS threads |
+
+**Bottom line:** Benchmark 2-1 cleanly separates the compiler effect from the parallelism-model effect. Rust/LLVM is ~1.15× faster per thread from 1T to 32T — a constant multiplier that does not grow with thread count. Both models scale equivalently. The 64T reversal (OpenMP +4%) is the first visible sign of spawn overhead; it becomes the dominant effect in Benchmark 1's fork/join measurements.

@@ -666,3 +666,22 @@ reflects OS preemption disrupting one or more threads mid-measurement.
 The persistent thread pool locks placement at creation; the scheduler's decisions at that
 moment determine all subsequent bandwidth. Explicit `proc_bind` is essential for
 reproducible NUMA-aware OMP performance.
+
+---
+
+## 11. Summary
+
+| Metric | Winner | Notes |
+|---|---|---|
+| Peak bandwidth (spread, clean machine) | **Rust** | Rust spread 32T: 95.7 GB/s vs OMP spread 32T: 87.6 GB/s (R4 clean) |
+| Bandwidth per thread (8T, 1 thread/node) | **Rust** | 45.1 vs 23.1 GB/s — LLVM dual-accumulator issues 2 concurrent loads/cycle vs GCC single |
+| Absolute bandwidth ceiling (64T) | **OMP close** | OMP close 64T: 122–128 GB/s when uninterrupted (~8 nodes × 16 GB/s ≈ DRAM limit) |
+| Reproducibility / stability | **Rust close** | Rust close 8T: stdev 0.10 GB/s across 20 trials; no collapses in any run |
+| Shared-cluster robustness | **OMP close** | Close 32T uses only 4 nodes (0,1,6,7); avoids cluster-loaded nodes 2,4 |
+| Default (no pinning) behavior | **OMP default** | OMP default 16–46 GB/s (spin-pool never migrates); Rust default 14–26 GB/s and random each trial |
+| NUMA-awareness without pinning | **Neither** | OMP default collapsed to 1.6–16 GB/s on quiet machine; Rust default varies 10× across runs |
+| Code complexity for pinning | **OpenMP** | `proc_bind(spread)` is one pragma clause; Rust needs `core_affinity` crate + ~15 lines |
+| Compile-time safety | **Rust** | Ownership prevents data races on shared array; `unsafe` scope for first-touch is explicit and minimal |
+| Spread vs close correctness | **Spread** | Spread is NUMA-correct on a dedicated machine; "close wins at 32T" (R3) was contamination |
+
+**Bottom line:** For memory-bandwidth-bound workloads on NUMA hardware, pinning strategy dominates everything. Rust spread with `core_affinity` delivers the highest per-thread bandwidth (2× vs OMP spread at 8T) via LLVM's dual-accumulator inner loop. OMP close at 64T reaches the machine's DRAM ceiling (~122 GB/s) when uninterrupted. Unpinned Rust is the worst option — random OS placement causes 2–7× lower bandwidth and high trial-to-trial variance. For a shared cluster, OMP close is the pragmatic choice; for peak throughput on a dedicated machine, Rust spread is optimal.
