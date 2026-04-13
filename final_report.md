@@ -512,8 +512,11 @@ requires Rust (or raw POSIX threads in C++, forfeiting the OpenMP productivity a
 **What we measured and why.**
 A parallel sum over a 1 GB `uint64_t` array with parallel first-touch initialization
 isolates the programmer control dimension for core placement.  On an 8-NUMA-node machine,
-uncontrolled thread placement causes remote DRAM accesses that can reduce bandwidth by
-2–4×.
+*uncontrolled* thread placement (the "default" strategy, no pinning) causes remote DRAM
+accesses that can reduce bandwidth by 2–4×.  Pinned strategies (spread and close) call
+`sched_setaffinity` / `proc_bind` *before* the initialization phase, so every thread
+first-touches its own pages on its pinned NUMA node and subsequently reads them with
+NUMA distance 10 (local, zero penalty) — identical to the "oracle" case.
 
 **Affinity mechanisms compared:**
 - **OpenMP:** `proc_bind(spread/close/default)` pragma clauses + `OMP_PLACES=cores`
@@ -550,8 +553,12 @@ Rust spread outperforms OMP spread at every thread count (1.2–2.5×) when the 
 clean.  Disassembly confirms the root cause: LLVM generates a dual-accumulator SSE2 inner
 loop (4 u64s/iteration from two independent `paddq` chains); GCC generates a single-
 accumulator loop (2 u64s/iteration).  The doubled instruction-level parallelism allows the
-CPU to hide DRAM latency more effectively — a code generation difference, not a thread model
-difference.
+CPU to issue two concurrent cache-line fetch requests per cycle instead of one, effectively
+doubling per-core memory-level parallelism — a **code generation difference, not a NUMA
+locality difference**.  Both Rust spread and OMP spread call their respective pinning
+mechanism before the first-touch init phase; both achieve local DRAM access (distance 10)
+from the same memory controllers.  The bandwidth gap would persist even on a single-node
+machine.
 
 **Spread is correct at 8T for both languages.**  With 1 thread per NUMA node, 8 independent
 memory controllers serve 8 simultaneous streams.  Close at 8T puts all 8 threads on a single
@@ -574,12 +581,16 @@ artifact, not a true reversal of the bandwidth hierarchy.**
 theoretical peak), limited only by OS preemption in the other 2 trials.
 
 **Rust default (no pinning) requires explicit affinity on NUMA hardware.**
-`std::thread::spawn` places threads without NUMA awareness; the OS assigns threads to
-arbitrary cores each trial, causing random cross-node DRAM accesses.  Rust default reaches
-14–26 GB/s in R4, far below any pinned strategy.  OMP default (spin-waiting pool, no
-`proc_bind`) is paradoxically better — spin-waiting threads are never migrated by the OS,
-preserving first-touch locality automatically — but it collapsed to 1.6–16 GB/s in R4
-because on a quiet machine the scheduler packed all workers onto one NUMA node.
+With `strategy = "default"`, no `sched_setaffinity` call is made in either the init or
+sum phase.  The OS places each freshly-spawned thread on an arbitrary core; the first-touch
+init allocates pages on that core's NUMA node, and the sum thread may run on a different
+node in the next trial — or even migrate mid-computation.  The resulting cross-node DRAM
+accesses incur 1.6–2.2× latency penalties (one or two HyperTransport hops), producing
+highly variable results: 14–26 GB/s in R4, far below any pinned strategy and with large
+trial-to-trial variance.  OMP default (spin-waiting pool, no `proc_bind`) is paradoxically
+better — spin-waiting threads are never migrated by the OS, preserving first-touch locality
+automatically — but it collapsed to 1.6–16 GB/s in R4 because on a quiet machine the
+scheduler packed all workers onto one NUMA node.
 **Explicit pinning with `core_affinity` is mandatory for reproducible NUMA-aware Rust.**
 
 ---
@@ -589,10 +600,16 @@ because on a quiet machine the scheduler packed all workers onto one NUMA node.
 **The compiler effect (LLVM vs GCC).**
 The OpenMP vs Rust comparison is partly a GCC vs LLVM comparison.  LLVM consistently
 generates better inner loops: 8× unrolled with multiple accumulators for popcount
-(B2-1, +1.15× per thread), and dual-accumulator SSE2 for array sum (B5, 1.1–2.8×
-higher bandwidth per NUMA node at equal thread-per-node count).  These advantages are
-**constant multipliers** — the scaling curves are parallel lines offset by compiler
-quality, not by parallelism model quality.
+(B2-1, +1.15× per thread), and a dual-accumulator SSE2 loop for array sum (B5, 1.1–2.8×
+higher bandwidth per NUMA node at equal thread-per-node count).  In both cases the
+advantage is pure instruction-level parallelism — LLVM breaks loop-carried accumulator
+dependencies that GCC leaves intact, allowing the CPU to issue more concurrent memory
+requests from the same hardware.  Critically, both the OMP and Rust B5 binaries achieve
+full NUMA-local access (distance 10) when pinned; the bandwidth difference between Rust
+spread and OMP spread at 8T (45.1 vs 23.1 GB/s) would be exactly the same on a single-NUMA
+node machine.  These advantages are **constant multipliers** — the scaling curves are
+parallel lines offset by compiler quality, not by parallelism model quality or NUMA
+topology.
 
 **The thread model effect (persistent pool vs spawn-per-trial).**
 OpenMP's pool advantage is invisible when per-thread compute time is long (hundreds of
