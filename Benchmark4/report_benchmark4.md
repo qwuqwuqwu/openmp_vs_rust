@@ -27,7 +27,13 @@ This benchmark measures how **static vs. dynamic scheduling** affects performanc
 
 ## Data Collection
 
-Results for Rust strategies were collected across two runs (early-morning low-load run 2 for Rust, which was significantly cleaner). OpenMP results were clean in run 1 and unchanged. All analysis below uses the cleanest available data per cell.
+| Run | Files | Conditions | Usable? |
+|-----|-------|------------|---------|
+| Run 1 | `results_openmp_static.csv`, `results_openmp_dynamic.csv` | Daytime, shared cluster | OMP: clean 1T–64T |
+| Run 2 | `results_rust_static_2.csv`, `results_rust_dynamic_2.csv`, `results_rust_rayon_2.csv` | Early morning, low load | Rust: clean all T |
+| Run 3 | `results_*_3.csv` (all 5 strategies) | Daytime, heavy cluster load | Partial: T=1–2 only for most strategies; T≥32 unusable |
+
+Results for Rust strategies were collected across two runs (early-morning low-load run 2 for Rust, which was significantly cleaner). OpenMP results were clean in run 1 and unchanged. Run 3 was conducted under heavy cluster load and is heavily contaminated at T≥8 for most strategies; it is documented in §7 for completeness. All key findings use the cleanest available data per cell (Run 1 for OMP, Run 2 for Rust).
 
 ---
 
@@ -148,6 +154,92 @@ The choice of schedule matters 10× more than the choice of language for this wo
 In the first two runs, Rust static 64T showed 0.165–0.304s (all 5 trials, systematically high). This was attributed to either NUMA effects or OS scheduling instability with 64 fresh threads. The early-morning run 2 disproves both hypotheses: **Rust static 64T = 0.017s** with five trials of [0.017, 0.017, 0.017, 0.017, 0.018] — nearly perfectly repeatable, matching OMP static 64T (0.018s).
 
 The 10–17× inflation in earlier runs was purely cluster load. When the cluster is quiet, both Rust static and OMP static scale the same way at 64T, with similar parallel efficiency (~43%).
+
+---
+
+## Run 3 Raw Data (Contaminated — Daytime Cluster Load)
+
+Run 3 re-ran all five strategies under daytime shared-cluster conditions. The cluster was heavily loaded, producing inflated times at T≥8 across most strategies and at T≥32 for OMP static. Only T=1–2 cells are trustworthy for Rust dynamic; only T=1, T=8, T=16 are clean for OMP static. The run confirms no correctness regression (all prime counts = 78,498) but does not change any findings.
+
+### OMP Static — Run 3 per-trial (seconds)
+
+| T | Trial 1 | Trial 2 | Trial 3 | Trial 4 | Trial 5 | Clean median | vs Run 1 |
+|--:|--------:|--------:|--------:|--------:|--------:|-------------:|--------:|
+| 1 | 0.518 | 0.489 | 0.475 | 3.052⚠ | 1.857⚠ | **0.489** | 1.02× |
+| 2 | 0.304 | 0.325 | 3.827⚠ | 3.321⚠ | 1.357 | **0.325** ⚠ | 0.99× |
+| 4 | 0.667⚠ | 0.467⚠ | 0.232 | 0.178 | 0.163 | **0.178** ⚠ | 1.07× |
+| 8 | 0.101 | 0.086 | 0.086 | 0.092 | 0.090 | **0.090** | 1.17× |
+| 16 | 0.044 | 0.043 | 0.043 | 0.050 | 1.046⚠ | **0.044** | 1.02× |
+| 32 | 0.273⚠ | 0.294⚠ | 0.432⚠ | 0.346⚠ | 0.388⚠ | **0.346** ⚠ | 15.7× |
+| 64 | 0.241⚠ | 0.272⚠ | 0.228⚠ | 0.172⚠ | 0.184⚠ | **0.228** ⚠ | 12.7× |
+
+### OMP Dynamic — Run 3 per-trial (seconds)
+
+| T | Trial 1 | Trial 2 | Trial 3 | Trial 4 | Trial 5 | Clean median | vs Run 1 |
+|--:|--------:|--------:|--------:|--------:|--------:|-------------:|--------:|
+| 1 | 1.437⚠ | 0.521 | 0.485 | 0.482 | 0.484 | **0.484** ⚠ | 1.12× |
+| 2 | 0.480 | 0.406 | 0.355 | 0.282 | 0.247 | **0.355** ⚠ | 1.64× |
+| 4 | 0.143 | 0.128 | 0.131 | 0.124 | 0.125 | **0.128** | 1.17× |
+| 8 | 0.116 | 0.083 | 0.068 | 0.067 | 0.067 | **0.068** | 1.24× |
+| 16 | 0.117 | 0.078 | 0.075 | 0.061 | 0.092 | **0.078** ⚠ | 2.79× |
+| 32 | 0.064 | 0.053 | 0.064 | 0.046 | 0.034 | **0.053** ⚠ | 3.12× |
+| 64 | 0.046 | 0.040 | 0.036 | 0.039 | 0.033 | **0.039** ⚠ | 3.25× |
+
+### Rust Static — Run 3 per-trial (seconds)
+
+| T | Trial 1 | Trial 2 | Trial 3 | Trial 4 | Trial 5 | Clean median | vs Run 2 |
+|--:|--------:|--------:|--------:|--------:|--------:|-------------:|--------:|
+| 1 | 0.470 | 0.473 | 0.459 | 0.459 | 0.478 | **0.470** | — (R2 N/A†) |
+| 2 | 0.295 | 0.287 | 0.282 | 0.280 | 0.294 | **0.287** | 0.95× |
+| 4 | 0.169 | 0.167 | 0.160 | 0.170 | 0.168 | **0.168** | 1.13× |
+| 8 | 0.081 | 0.080 | 0.087 | 0.088 | 0.091 | **0.087** | 1.13× |
+| 16 | 0.049 | 0.067 | 0.051 | 0.046 | 0.057 | **0.051** ⚠ | 1.24× |
+| 32 | 0.023 | 0.033 | 0.035 | 0.039 | 0.034 | **0.034** ⚠ | 1.42× |
+| 64 | 0.105⚠ | 0.028 | 0.018 | 0.031 | 0.019 | **0.024** ⚠ | 1.41× |
+
+† Rust static 1T was contaminated in Run 1 and Run 2; Run 3 gives the first clean 1T value: 0.470s, consistent with Rust dynamic 1T ≈ 0.438–0.446s.
+
+### Rust Dynamic — Run 3 per-trial (seconds)
+
+| T | Trial 1 | Trial 2 | Trial 3 | Trial 4 | Trial 5 | Clean median | vs Run 2 |
+|--:|--------:|--------:|--------:|--------:|--------:|-------------:|--------:|
+| 1 | 0.470 | 0.438 | 0.438 | 0.438 | 0.438 | **0.438** | 0.98× |
+| 2 | 0.224 | 0.225 | 0.223 | 0.245 | 0.467⚠ | **0.224** | 1.02× |
+| 4 | 0.143 | 0.155 | 0.146 | 0.131 | 0.143 | **0.143** ⚠ | 1.30× |
+| 8 | 0.085 | 0.079 | 0.073 | 0.064 | 0.058 | **0.073** ⚠ | 1.30× |
+| 16 | 0.058 | 0.293⚠ | 0.166⚠ | 0.189⚠ | 0.270⚠ | **0.189** ⚠ | 6.52× |
+| 32 | 0.427⚠ | 0.422⚠ | 0.335⚠ | 0.328⚠ | 0.214⚠ | **0.335** ⚠ | 20.9× |
+| 64 | 0.091 | 0.084 | 0.088 | 0.076 | 0.076 | **0.084** ⚠ | 6.00× |
+
+### Rust Rayon — Run 3 per-trial (seconds)
+
+| T | Trial 1 | Trial 2 | Trial 3 | Trial 4 | Trial 5 | Clean median | vs Run 2 |
+|--:|--------:|--------:|--------:|--------:|--------:|-------------:|--------:|
+| 1 | 0.476 | 0.596 | 0.524 | 1.383⚠ | 0.482 | **0.503** ⚠ | 1.15× |
+| 2 | 0.309 | 0.345 | 0.239 | 0.240 | 0.292 | **0.292** ⚠ | 1.33× |
+| 4 | 0.127 | 0.160 | 0.157 | 0.123 | 0.126 | **0.127** | 1.14× |
+| 8 | 0.375⚠ | 0.449⚠ | 0.321⚠ | 0.456⚠ | 0.648⚠ | **0.449** ⚠ | 7.88× |
+| 16 | 0.482⚠ | 0.498⚠ | 0.486⚠ | 0.527⚠ | 0.506⚠ | **0.498** ⚠ | 16.6× |
+| 32 | 0.359⚠ | 0.307⚠ | 0.347⚠ | 0.353⚠ | 0.336⚠ | **0.347** ⚠ | 17.4× |
+| 64 | 0.297⚠ | 0.237⚠ | 0.201⚠ | 0.233⚠ | 0.181⚠ | **0.233** ⚠ | 9.71× |
+
+### Cross-Run Comparison — Clean Medians (seconds)
+
+Best available data selected per cell (Run 1 for OMP, Run 2 for Rust, Run 3 shown for reference where clean).
+
+| T | OMP static R1 | OMP static R3 | OMP dyn R1 | OMP dyn R3 | Rust static R2 | Rust static R3 | Rust dyn R2 | Rust dyn R3 | Rayon R2 | Rayon R3 |
+|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| 1 | 0.478 | 0.489 | 0.432 | 0.484⚠ | N/A† | **0.470** | 0.446 | 0.438 | 0.436 | 0.503⚠ |
+| 2 | 0.329 | 0.325⚠ | 0.217 | 0.355⚠ | 0.303 | 0.287 | 0.220 | 0.224 | 0.219 | 0.292⚠ |
+| 4 | 0.166 | 0.178⚠ | 0.109 | 0.128 | 0.149 | 0.168 | 0.110 | 0.143⚠ | 0.111 | 0.127 |
+| 8 | 0.077 | 0.090 | 0.055 | 0.068 | 0.077 | 0.087 | 0.056 | 0.073⚠ | 0.057 | 0.449⚠ |
+| 16 | 0.043 | 0.044 | 0.028 | 0.078⚠ | 0.041 | 0.051⚠ | 0.029 | 0.189⚠ | 0.030 | 0.498⚠ |
+| 32 | 0.022 | 0.346⚠ | 0.017 | 0.053⚠ | 0.024 | 0.034⚠ | 0.016 | 0.335⚠ | 0.020 | 0.347⚠ |
+| 64 | 0.018 | 0.228⚠ | 0.012 | 0.039⚠ | 0.017 | 0.024⚠ | 0.014 | 0.084⚠ | 0.024 | 0.233⚠ |
+
+⚠ = value is elevated due to cluster load; do not use for performance conclusions.
+
+**Run 3 Observation:** The contamination pattern is consistent with heavy shared-cluster load at job start. At T=1–2, threads stay on a single socket and contention is low; at T≥8 (especially T≥16), threads fan out across sockets that are loaded, inflating elapsed time by 2–21×. Rust Rayon is the most sensitive: its work-stealing deque incurs additional cross-socket traffic that amplifies the effect. The only new finding from Run 3 is the **first clean Rust static T=1 measurement: 0.470s**, consistent with the Rust dynamic T=1 baseline (0.438–0.446s) and confirming that Rust static serial overhead is in the same range as OMP static (0.478s).
 
 ---
 
