@@ -3,7 +3,7 @@
 > **How to use this flowchart:**
 > Walk through each question from top to bottom. Answer based on your system's requirements.
 > Each terminal outcome cites which benchmark provides the supporting evidence.
-> Nodes marked **[TBD]** will be updated as Benchmarks 2–4 are completed.
+> All five benchmarks are complete; all nodes are backed by empirical data from crunchy5.
 
 ---
 
@@ -47,7 +47,23 @@ flowchart TD
     Q5{"Q5 — Reduction workloads\n\nDoes your workload involve\nheavy reduction patterns?\n\neg. summing across threads,\nbuilding a shared histogram,\naccumulating partial results"}
 
     Q5 -- Yes --> Q5A
-    Q5 -- No --> Q6
+    Q5 -- No --> Q5B
+
+    Q5B{"Q5B — Memory bandwidth\n\nIs your workload memory-bandwidth-\nbound on multi-socket hardware?\n\neg. scanning GB-scale arrays,\nstreaming access with trivial\narithmetic, gather/scatter"}
+
+    Q5B -- "Yes — bandwidth and\nNUMA locality matter" --> Q5C
+
+    Q5B -- "No — compute-bound\nor single-socket" --> Q6
+
+    Q5C{"Q5C — Affinity trade-off\n\nPrioritize maximum raw bandwidth\n(extra code, unsafe Rust)\nor simpler code with\nslightly lower bandwidth?"}
+
+    Q5C -- "Maximum bandwidth" --> RUST_NUMA
+
+    Q5C -- "Simpler code,\ngood-enough bandwidth" --> OMP_NUMA
+
+    RUST_NUMA(["✅ Likely Rust + core_affinity\n\nBenchmark 5 (1 GB array sum, crunchy5, R4 clean):\nRust spread vs OMP spread (explicit pinning):\n  8T:  45.1 vs 23.1 GB/s → 1.95×\n  16T: 76.9 vs 19.6 GB/s → 3.9×\n  32T: 95.7 vs 87.6 GB/s → 1.09×\n  64T: variable across runs (32–53 GB/s\n       for Rust vs 44–64 GB/s for OMP)\n\nRoot cause: LLVM dual-accumulator SSE2\nvs GCC single-accumulator — doubles\nILP and memory-level parallelism per thread.\nNOT a NUMA distance difference: both Rust\nspread and OMP spread call their pinning\nmechanism before first-touch init, so both\nachieve local DRAM access (distance 10).\nThe bandwidth gap would persist on a\nsingle-socket machine.\n\nCosts: ~15 lines of explicit pinning code,\nunsafe Rust (set_len + raw pointer),\ncore_affinity crate dependency.\n\nWarning: Rust without pinning (default)\nreaches only 14–26 GB/s — far below any\npinned strategy. NUMA distance penalties\n(1.6–2.2×) apply only to the unpinned\ndefault case where the OS places fresh\nthreads on arbitrary nodes each trial."])
+
+    OMP_NUMA(["✅ Likely OpenMP\n\nBenchmark 5 (1 GB array sum, crunchy5, R4 clean):\nOMP persistent pool gives implicit NUMA\nlocality at zero extra affinity code:\n  OMP close 16T:   32.8 GB/s (very stable)\n  OMP spread 32T:  87.6 GB/s\n  OMP close 64T:  122 GB/s peak (3/5 trials)\n\nCorrected finding: spread beats close\nat 32T on a quiet machine (87.6 vs 52.1).\nA daytime run showed the reverse because\nnodes used by spread were cluster-loaded.\nSpread is NUMA-correct but cluster-fragile.\n\nOMP default is unreliable: collapsed to\n1.6–16 GB/s (R4) when OS packed the\nspin-pool onto one NUMA node. Use\nproc_bind(spread) or proc_bind(close)\nfor reproducible results.\n\nPeak is ~9% below Rust spread at 32T,\nbut no unsafe code or extra crate needed."])
 
     Q5A{"Q5A — What matters more\nfor your team?\n\nImplementation speed and\nconciseness\n  vs\nExplicit control and\nlong-term auditability"}
 
@@ -61,35 +77,21 @@ flowchart TD
 
     Q6{"Q6 — Scalability\n\nDoes your system need to scale\nto many cores efficiently?\n\neg. Will you run at 16, 32,\nor more threads and expect\nnear-linear speedup?"}
 
-    Q6 -- "Yes — scalability\nis a primary concern" --> Q6A
+    Q6 -- "Yes — scalability\nis a primary concern" --> OPENMP_SCALE
 
-    Q6A{"Q6A — What limits\nyour scalability?\n\nSynchronization overhead\n  vs\nLoad imbalance"}
-
-    Q6A -- "Synchronization overhead\nis the bottleneck" --> OPENMP_SCALE
-
-    OPENMP_SCALE(["✅ Likely OpenMP\n\nBenchmark 1 (crunchy5, 1–32T):\nBarrier overhead — OMP vs Rust:\n  1T:  3.0 µs vs 3.0 µs  → 1.0× (tied)\n  2T:  3.7 µs vs 9.6 µs  → 2.6×\n  4T:  2.1 µs vs 18.0 µs → 8.5×\n  8T:  2.3 µs vs 29.4 µs → 12.8×\n  16T: 4.4 µs vs 62.0 µs → 14.2×\n  32T: 9.4 µs vs ~130 µs → 13.8×\n\nOMP barrier plateaus at 13–14×\nadvantage from 8T onward.\nRust condvar-based Barrier\nscales linearly with thread count.\n\nBenchmark 2-1 (popcount, N=2³³):\nAt 64 threads, OpenMP is 4% faster\nthan Rust despite a slower inner\nloop — OpenMP's persistent thread\npool wakes up instantly while Rust\nspawns 64 fresh OS threads each\ntrial (~3 ms overhead per run).\n\nCrossover: 32T→64T, where per-thread\nwork drops to ~250 ms and thread\nmanagement overhead becomes visible."])
-
-    Q6A -- "Load imbalance\nis the bottleneck" --> OPENMP_SCHED
+    OPENMP_SCALE(["✅ Likely OpenMP\n\nBoth bottleneck types favour OpenMP:\n\n① Synchronization overhead (B1, 1–32T):\nBarrier overhead — OMP vs Rust:\n  1T:  3.0 µs vs 3.0 µs  → 1.0× (tied)\n  2T:  3.7 µs vs 9.6 µs  → 2.6×\n  4T:  2.1 µs vs 18.0 µs → 8.5×\n  8T:  2.3 µs vs 29.4 µs → 12.8×\n  16T: 4.4 µs vs 62.0 µs → 14.2×\n  32T: 9.4 µs vs ~130 µs → 13.8×\nOMP barrier plateaus at ~14×\nadvantage from 8T onward.\n\n② Load imbalance → see OPENMP_SCHED\n(dynamic scheduling delivers same\nbenefit in both languages; OMP\nexpresses it in one keyword).\n\nAlso: at 64T OpenMP is 4% faster\nthan Rust (B2-1) — persistent pool\nvs spawning 64 fresh OS threads."])
 
     Q6 -- "No — moderate scale,\nscalability is not\nthe dominant concern" --> Q7
 
-    Q7{"Q7 — Team and timeline\n\nWhat is your team's situation?"}
+    Q7{"Q7 — Time horizon\n\nIs this a long-lived codebase\nor growing team where\ncorrectness and auditability\nmatter long-term?"}
 
-    Q7 -- "Team is already in C/C++\nand timeline is tight" --> OPENMP_TEAM
-
-    OPENMP_TEAM(["✅ Likely OpenMP\n\nOpenMP adds parallelism to\nexisting C/C++ code with minimal\nnew concepts. Ramp-up is low\nfor a C/C++ team.\n\nBenchmark 1 implementation:\n  OpenMP: 218 lines\n  Rust:   313 lines\n\nOpenMP required 3 pragmas.\nRust required designing a\nfull thread pool from scratch."])
-
-    Q7 -- "Team is new to both\nor long-term investment\nis acceptable" --> Q8
-
-    Q8{"Q8 — Time horizon\n\nHow long will this codebase live\nand how many people will\nwork on it?"}
-
-    Q8 -- "Short-lived prototype\nor small team, speed matters" --> OPENMP_PROTO
-
-    OPENMP_PROTO(["✅ Likely OpenMP\n\nFor short-lived or\nexperimental code, OpenMP's\nlow boilerplate and fast\nresults outweigh its\nlack of safety guarantees."])
-
-    Q8 -- "Long-lived system\nor growing team\ncorrectness matters" --> RUST_FINAL
+    Q7 -- "Yes — long-lived system\nor growing team" --> RUST_FINAL
 
     RUST_FINAL(["✅ Choose Rust\n\nFor long-lived concurrent systems,\nRust's ownership model pays off:\n\n• Data races caught at compile time\n• Explicit sharing makes code\n  reviews and audits easier\n• Refactoring is safer\n• No need for sanitizers or\n  careful documentation of\n  shared/private variables\n\nHigher upfront cost,\nstronger long-term guarantees."])
+
+    Q7 -- "No — prototype, short-lived,\nor team already in C/C++" --> OPENMP_SIMPLE
+
+    OPENMP_SIMPLE(["✅ Likely OpenMP\n\nFor short-lived systems or C/C++ teams:\nOpenMP adds parallelism with\nminimal ramp-up and low boilerplate.\n\nBenchmark 1 implementation cost:\n  OpenMP: 218 lines, 3 pragmas\n  Rust:   313 lines, full thread\n          pool designed from scratch\n\nFor prototypes, OpenMP's fast\nresults outweigh its lack of\ncompile-time safety guarantees.\nFor C/C++ teams with a tight\ntimeline, the adoption cost\nof Rust is not justified."])
 ```
 
 ---
@@ -103,10 +105,10 @@ This table will be filled in as benchmarks are completed.
 |---|---|---|---|
 | Q3 — Sync frequency | Fork/join overhead vs thread count (1–32T) | Benchmark 1 (re-run) | ✅ Complete |
 | Q5 — Reduction workloads | Reduction LOC, runtime, correctness effort | Benchmark 3 | ✅ Complete |
-| Q6A — Sync overhead at scale | Barrier cost 1–32T, speedup curves | Benchmark 1 (re-run) + 2-1 | ✅ Complete |
-| Q6A — Load imbalance | Runtime under uneven work, scheduling | Benchmark 4 | ✅ Complete |
-| Q4 — Custom scheduling | LOC, flexibility, runtime comparison | Benchmark 4 | ✅ Complete |
-| Q6 — Scalability | Speedup and efficiency vs thread count | Benchmark 2-1 | ✅ Complete |
+| Q6 — Scalability | Barrier cost 1–32T, pool vs spawn overhead, speedup curves | Benchmark 1 + 2-1 | ✅ Complete |
+| Q4 — Scheduling needs | LOC, flexibility, runtime comparison; load imbalance correction | Benchmark 4 | ✅ Complete |
+| Q5B/Q5C — NUMA bandwidth | Bandwidth vs affinity strategy, 8–64T | Benchmark 5 | ✅ Complete |
+| Q7 — Time horizon | LOC cost, safety guarantees, long-term maintenance trade-off | Benchmark 1 | ✅ Complete |
 
 ---
 
@@ -123,7 +125,7 @@ These facts are established from the thread overhead microbenchmark (fork/join, 
    1T: tied (~3.0 µs each). 2T: 2.6×. 4T: 8.5×. 8T: 12.8×. 16T: 14.2×. 32T: 13.8×.
    OpenMP barrier: 2.1–9.4 µs (1T–32T). Rust barrier: 3.0–130 µs.
    Ratio plateaus at ~14× from 8T onward — both scale, but with a stable ~14× cost multiplier.
-   → Reinforces Q6A: if synchronization is the bottleneck, OpenMP scales better by ~14× at 8T+.
+   → Reinforces Q6: if synchronization is the bottleneck, OpenMP scales better by ~14× at 8T+.
 
 3. **Atomic increment cost is essentially identical** (38–107 ns OMP, 47–103 ns Rust, no consistent winner at any thread count).
    → Neither language has an advantage on hardware atomics.
@@ -264,6 +266,45 @@ These facts are established from the prime testing benchmark (N = 1,000,000, 5 s
     This definitively rules out NUMA effects or structural load imbalance as the cause — both are reproducible properties that would persist even at low cluster load. The anomaly was pure cluster interference.
     OpenMP's persistent pool produced 0 contaminated cells in all runs. Rust's fresh-thread spawning is more sensitive to cluster load, but produces identical performance when the cluster is quiet.
     → Reinforces Q3: OpenMP's persistent pool is a reliability advantage on shared hardware, not just a latency advantage.
+
+---
+
+## Key Findings (Benchmark 5 — Thread-to-Core Affinity, Memory Bandwidth)
+
+These facts are established from the parallel array sum benchmark (1 GB uint64_t, 3 affinity strategies, 8–64 threads, crunchy5):
+
+27. **Explicit NUMA-aware pinning is essential for memory-bandwidth workloads on multi-socket hardware.**
+    Rust default (no pinning): 14–26 GB/s (R4 clean). Rust spread (explicit sched_setaffinity): 45–96 GB/s. Same hardware, same thread count — a 2–7× gap. The gap has two causes: (a) unpinned threads land on arbitrary NUMA nodes, causing cross-node DRAM latency penalties of 1.6–2.2× per hop; (b) multiple threads may pile onto the same node, reducing total controller count. This NUMA distance penalty applies only to the *default* (unpinned) case — spread and close call sched_setaffinity before first-touch init, achieving local access (distance 10) with zero penalty.
+    OpenMP's persistent thread pool avoids the worst-case (OMP spread/close: 16–122 GB/s), but OMP default collapsed to 1.6–16 GB/s in R4 when the OS packed the idle spin-pool onto a single NUMA node on a quiet machine.
+    → Drives Q5B: if the workload is memory-bandwidth-bound, placement strategy is the dominant variable.
+
+28. **Rust spread with core_affinity outperforms OMP spread at 8T–32T on a clean machine.**
+    R4 clean run: 8T: 45.1 vs 23.1 GB/s (1.95×) — 16T: 76.9 vs 19.6 GB/s (3.9×) — 32T: 95.7 vs 87.6 GB/s (1.09×). At 64T, Rust spread was volatile in R4 (9–48 GB/s range); earlier daytime run: 53.3 vs 44.0 GB/s (1.21×).
+    Root cause: LLVM generates a dual-accumulator SSE2 inner loop (4 u64s/iteration) vs GCC's single-accumulator loop (2 u64s/iteration), doubling instruction-level parallelism and memory-level parallelism per thread. This is a **code-generation difference, not a NUMA locality difference** — both Rust spread and OMP spread call their pinning mechanism before the first-touch init phase and both achieve NUMA-local access (distance 10) from the same memory controllers. The bandwidth gap would be identical on a single-socket machine.
+    → Drives Q5C → RUST_NUMA: for maximum bandwidth at 8T–32T, Rust + explicit spread pinning is the right choice.
+
+29. **Spread beats close on a dedicated machine; close appears to win only when spread's NUMA nodes are cluster-loaded.**
+    R4 clean: OMP spread 32T = 87.6 GB/s vs OMP close 32T = 52.1 GB/s. Spread correctly exploits all 8 NUMA nodes.
+    A daytime run (R3) showed the opposite — spread 33.0 GB/s vs close 64.5 GB/s — because 4 of the 8 nodes were heavily loaded by other cluster users (~21 GB in use of 32 GB). Spread always touches all nodes; one busy node costs ~12.5% of total bandwidth.
+    Also: close 32T activates nodes 0, 1, **6, 7** (not 0–3): core 16 → node 6, core 24 → node 7 due to non-sequential NUMA numbering on crunchy5.
+    → Practical implication: spread is the NUMA-correct strategy for bandwidth; close is more robust on shared clusters. The apparent "close wins" result is a cluster-load artifact.
+
+30. **OMP close 64T achieves near-peak aggregate bandwidth — but is bimodal.**
+    R4: OMP close 64T = 8 threads/node × 8 nodes, all memory controllers active. 3 of 5 trials reached 122–128 GB/s (~60% of 204.8 GB/s theoretical peak, or ~8 × 15.5 GB/s measured per node). 2 trials collapsed to 63 GB/s due to OS preemption of a thread during the sum pass.
+    OMP default is unreliable: on a quiet machine it collapsed to 1.6–16 GB/s (R4) because idle spin-waiting threads were packed onto a single NUMA node by the scheduler. Use proc_bind(spread) or proc_bind(close) explicitly; never rely on default for bandwidth workloads.
+    → Drives Q5C → OMP_NUMA: OMP close 64T is the highest-bandwidth OpenMP configuration. For fewer than 64 threads, OMP spread is correct.
+
+31. **Rust's default thread model is NUMA-blind and produces high variance (pinned strategies are unaffected).**
+    `std::thread::spawn` with no `sched_setaffinity` call places threads on arbitrary cores each trial. The first-touch init then allocates pages on those arbitrary nodes; the subsequent read may cross NUMA node boundaries, incurring a 1.6–2.2× latency penalty (1 or 2 HyperTransport hops). Because fresh threads are re-rolled each trial, the penalty is random and irreproducible. In R4, Rust default 8T ranged 14.2–14.6 GB/s (lucky stable placement); in R3, trial 1 reached 19.57 GB/s then collapsed to 7–9 GB/s for subsequent trials.
+    This issue is specific to `strategy = "default"`. Rust spread and Rust close call `core_affinity::set_for_current()` as the first action in each spawned thread — before the init phase — so both achieve local DRAM access (distance 10) with zero cross-node penalty.
+    → Reinforces Q5B → Q5C: any Rust implementation of a bandwidth-bound workload on NUMA hardware must include explicit core_affinity pinning. The default is not a safe baseline.
+
+32. **Peak measured memory bandwidth on crunchy5 across all strategies and runs:**
+    - Rust spread 32T (R4): ~96 GB/s
+    - OMP spread 32T (R4): ~88 GB/s
+    - OMP close 64T (R4, clean trials): ~122–128 GB/s
+    crunchy5 is a **Dell PowerEdge R815** (confirmed via `/sys/class/dmi/id/product_name`). It has 8 NUMA nodes, each with 2 DDR3 memory channels per die (confirmed: AMD Opteron 6272 spec + Dell R815 spec: 4 channels/socket ÷ 2 dies = 2/die; also empirically supported because measured 16.5 GB/s/node exceeds any single-channel DDR3 ceiling). DIMM speed is DDR3-1600 per the CPU's max-supported spec but not directly verified (`dmidecode` requires root). Assuming DDR3-1600: 25.6 GB/s theoretical per node; measured ~16.5 GB/s per node (~64% efficiency), consistent with STREAM benchmark results.
+    OMP close 64T at ~122 GB/s is the absolute peak: 8 nodes × 15.25 GB/s ≈ 122 GB/s, confirming per-node saturation not aggregate-bus saturation.
 
 ---
 

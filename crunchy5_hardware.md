@@ -5,6 +5,16 @@ This file records the hardware specification for reproducibility and context.
 
 ---
 
+## System Identity
+
+| Property | Value | Source |
+|---|---|---|
+| Server model | Dell PowerEdge R815 | `cat /sys/class/dmi/id/board_name` → `0THJFH` (Dell R815 I/O daughter board) |
+| CPU | AMD Opteron 6272 × 4 sockets | `lscpu` |
+| Total RAM | ~256 GB (258 GiB) | `lshw -C memory` |
+
+---
+
 ## CPU Summary
 
 | Property | Value |
@@ -90,20 +100,37 @@ From `numactl -H` (snapshot taken April 10, 2026):
 > Node 0 has 31,614 MB rather than 32,253 MB because a small region is reserved
 > for the kernel and hardware memory-mapped I/O.
 
-### Hardware memory specification (AMD Opteron 6272)
+### Hardware memory specification
 
-| Property | Value |
-|---|---|
-| Memory type | DDR3 |
-| Memory channels per die | 2 |
-| Theoretical peak per channel | 12.8 GB/s (DDR3-1600) |
-| Theoretical peak per NUMA node | ~25.6 GB/s (2 × 12.8) |
-| Measured peak per node (B5) | ~15–16 GB/s (~62% efficiency) |
-| Total theoretical peak (8 nodes) | ~204.8 GB/s |
-| Measured total peak (B5, OMP close 64T) | ~122–128 GB/s (~60–63% efficiency) |
+> **Source confidence levels:**
+> - DDR3 type and 2 channels/die: **confirmed** — independently by AMD Opteron 6272 architecture spec, Dell PowerEdge R815 spec (4 channels/socket ÷ 2 dies/socket = 2/die), and empirical measurement (see below).
+> - DDR3 speed (1333 vs 1600 MHz): **unverified** — the R815 supports both depending on DIMM population. Run `sudo dmidecode -t memory` or look up the service tag at dell.com/support to confirm.
 
-The 60–65% efficiency is typical for real streaming workloads on DDR3 systems
-(the STREAM benchmark routinely achieves this fraction of theoretical DDR peak).
+| Property | Value | Source |
+|---|---|---|
+| Memory type | DDR3 | AMD Opteron 6272 spec + Dell R815 spec |
+| Channels per socket | 4 | Dell PowerEdge R815 spec |
+| Channels per die (= per NUMA node) | **2** | 4 channels ÷ 2 dies/socket; confirmed by AMD spec and empirical measurement |
+| Total memory channels (8 nodes) | 16 | 4 channels × 4 sockets |
+| Memory per channel | ~16 GB | 256 GB total ÷ 16 channels |
+| Max speed: 1–2 DIMMs/channel | DDR3-1600 (12.8 GB/s) | Dell R815 spec |
+| Max speed: 3+ DIMMs/channel | DDR3-1333 (10.67 GB/s) | Dell R815 spec |
+| **Actual installed DIMM speed** | **Unknown** — verify via `sudo dmidecode -t memory` or Dell service tag | — |
+| Theoretical peak/node (if DDR3-1600) | 25.6 GB/s | 2 × 12.8 |
+| Theoretical peak/node (if DDR3-1333) | 21.3 GB/s | 2 × 10.67 |
+| **Measured** single-node peak (B5, OMP close 8T) | **~16.5 GB/s** | Directly measured |
+| **Measured** total peak (B5, OMP close 64T, clean) | **~122–128 GB/s** | Directly measured |
+
+**Empirical confirmation that channel count = 2 (not 1):**
+OMP close 8T pins all 8 threads to node 0 → measures ~16.5 GB/s.
+Any single DDR3 channel (even DDR3-1866) caps at 14.9 GB/s — physically impossible to
+reach 16.5 GB/s. Therefore ≥ 2 channels per node is proven by the measurement alone.
+
+**What the measured bandwidth implies about DIMM speed:**
+- If DDR3-1600: 16.5 / 25.6 = **64% efficiency** — typical for STREAM-class workloads on DDR3
+- If DDR3-1333: 16.5 / 21.3 = **77% efficiency** — plausible but on the higher end
+
+Both are physically possible; DDR3-1600 at 64% is the more common figure in literature.
 
 ---
 

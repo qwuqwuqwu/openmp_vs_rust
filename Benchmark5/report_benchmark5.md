@@ -111,10 +111,14 @@ From `numactl -H` (snapshot April 10, 2026):
 | node 5 | 56–63 | 32,253 MB (~32 GB) | 20,820 MB | Moderate |
 | **Total** | 0–63 | **~256 GB** | | |
 
-Each node has ~32 GB of DDR3 memory backed by **2 DDR3-1600 channels**, giving a
-theoretical peak of 2 × 12.8 GB/s = **25.6 GB/s per node**. Our measured peak of
-~15–16 GB/s per node (from OMP close 64T) represents ~62% efficiency, consistent with
-typical STREAM benchmark results on this generation of hardware.
+Each node has ~32 GB of DDR3 memory. Per the AMD Opteron 6272 datasheet, each die has
+**2 DDR3 memory channels** (the actual installed DIMM speed has not been directly
+verified via `dmidecode`). Assuming DDR3-1600 (the max supported speed), the theoretical
+peak is 2 × 12.8 GB/s = **25.6 GB/s per node**. Our measured single-node peak of
+~16.5 GB/s (OMP close 8T, all threads on node 0) represents ~64% efficiency, consistent
+with typical STREAM benchmark results on DDR3 systems. The "2 channels" claim is also
+empirically supported: 1 channel at any DDR3 speed ≤ DDR3-1866 caps at 14.9 GB/s,
+which our 16.5 GB/s measurement exceeds.
 
 The snapshot shows nodes 2, 4, 6, 7 heavily loaded by other cluster users (~18–21 GB in
 use). This directly explains why spread — which touches all 8 nodes — is volatile across
@@ -597,16 +601,20 @@ instructions (LLVM generates fully unrolled vectorized loops for all three strat
 
 ### 8.6 Memory bandwidth efficiency
 
-Using node 0's ~32 GB DDR3 and 2 DDR3-1600 channels as the reference:
+**Source note:** Channel count (2 per die) is from the AMD Opteron 6272 datasheet and is
+empirically supported by the measured single-node bandwidth exceeding any single-channel
+DDR3 ceiling. DDR3-1600 is the maximum supported speed; actual installed DIMM speed is
+unverified (run `sudo dmidecode -t memory` to confirm). All efficiency percentages below
+assume DDR3-1600 as the reference.
 
 | Metric | Value |
 |---|---|
-| Theoretical peak per channel | 12.8 GB/s (DDR3-1600) |
-| Theoretical peak per node (2 channels) | 25.6 GB/s |
+| Theoretical peak per channel (DDR3-1600, unverified) | 12.8 GB/s |
+| Theoretical peak per node (2 channels × 12.8 GB/s) | 25.6 GB/s |
 | Theoretical peak all 8 nodes | 204.8 GB/s |
-| Measured single-node peak (OMP close 8T) | ~16.5 GB/s = **64% efficiency** |
-| Measured 8-node peak (OMP close 64T, clean) | ~122–128 GB/s = **60–63% efficiency** |
-| Rust spread 32T peak (Run 4) | 95.7 GB/s = **47% of total theoretical** |
+| **Measured** single-node peak (OMP close 8T, directly observed) | **~16.5 GB/s** = 64% of 25.6 GB/s |
+| **Measured** 8-node peak (OMP close 64T, clean trials) | **~122–128 GB/s** = 60–63% of 204.8 GB/s |
+| Rust spread 32T peak (Run 4) | 95.7 GB/s = 47% of 204.8 GB/s theoretical |
 
 The 60–65% single-node efficiency is consistent with what the STREAM benchmark typically
 achieves on DDR3 systems. The gap from 100% reflects: DRAM row-open overhead, refresh

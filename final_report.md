@@ -298,7 +298,7 @@ deliverable for the "guidelines on when to use each language" requirement.
 | Rust thread model | `std::thread::spawn` per trial (fresh OS threads) |
 | Trials per configuration | 5 per run (B5 Run 5: 20 trials); warmup trial discarded |
 | Runs | B5 conducted across 3 runs: R3 (daytime), R4 (early morning, low load), R5 (20-trial validation) |
-| NUMA memory per node | ~32 GB DDR3-1600 (2 channels × 12.8 GB/s = 25.6 GB/s theoretical per node; ~62% measured) |
+| NUMA memory per node | ~32 GB DDR3, 2 channels/die (per AMD Opteron 6272 spec; speed unverified — assuming DDR3-1600: 2 × 12.8 = 25.6 GB/s theoretical; ~16.5 GB/s measured ≈ 64%) |
 | Outlier methodology | Sort 5 trials; drop any trial > 2× the median; recompute median of remaining |
 | Run time | Early morning (low cluster load) for all key results |
 | Affinity env (B5 only) | `OMP_PLACES=cores` set in run script (process-local, no effect on other users) |
@@ -541,7 +541,9 @@ onto a single NUMA node (zero cross-job competition, so no forced redistribution
 † Rust spread 64T was volatile in R4 (9–48 GB/s range); the earlier daytime run (R3) gave 53 GB/s.
 
 **NUMA topology note.**  crunchy5 has 8 NUMA nodes, each backed by ~32 GB DDR3 with 2 channels
-(25.6 GB/s theoretical; ~15–16 GB/s measured, 62% efficiency).  The node numbering is
+per die (per AMD Opteron 6272 spec; actual DIMM speed unverified — assuming DDR3-1600 gives
+25.6 GB/s theoretical; ~16.5 GB/s directly measured on a single node, 64% efficiency).
+The node numbering is
 non-sequential: cores 0–7 → node 0, 8–15 → node 1, 16–23 → node **6**, 24–31 → node **7**,
 then 32–63 → nodes 2–5.  Consequently, `proc_bind(close)` with 32 threads fills cores 0–31
 and activates nodes 0, 1, **6, 7** — not nodes 0–3 as one might assume from sequential
