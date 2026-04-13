@@ -495,6 +495,15 @@ Run 3 (daytime) made close appear faster at 32T — a contamination artifact, no
 
 ### 8.2 NUMA distance effects on Rust default
 
+> **Why this does NOT apply to Rust spread/close:** Both `parallel_init` and `parallel_sum`
+> call `core_affinity::set_for_current(core)` as the **first** action inside each spawned
+> thread — before any array access. Linux first-touch policy then allocates pages on the
+> pinned thread's NUMA node. Because `build_pin_list` maps thread `tid` to the same core
+> in both functions, each sum thread reads memory that was first-touched on exactly its
+> own NUMA node: **local access (distance 10), zero penalty**. This is identical to OMP's
+> `proc_bind` in the init function. The NUMA distance analysis below applies only to
+> `strategy = "default"`, where no pinning call is made in either function.
+
 The non-uniform distance matrix (§3.3) directly explains Rust default's high trial-to-trial
 variance. With no pinning, Rust's fresh-spawn model lets the OS place threads anywhere.
 Depending on which nodes the OS chooses, a thread may be reading memory that is:
@@ -532,12 +541,17 @@ is why close 32T achieves consistent 49–56 GB/s even under cluster load.
 
 ### 8.4 Spread vs. close: per thread count verdict
 
+For all pinned strategies (spread and close in both languages), `sched_setaffinity` /
+`proc_bind` is applied **before** the first-touch init phase, so every thread reads memory
+it initialized locally (NUMA distance = 10). The comparison below is therefore purely about
+**how many memory controllers are active**, not about cross-node penalties.
+
 | Thread count | Dedicated machine | Shared cluster | Physical reason |
 |---|---|---|---|
-| **8T** | Spread wins 2–3× | Spread unreliable | 8 controllers vs 1; distance = no issue with local data |
+| **8T** | Spread wins 2–3× | Spread unreliable | 8 controllers vs 1; all accesses local (distance 10) for both strategies |
 | **16T** | Spread wins ~2× (when clean) | Spread frequently collapses | 8 vs 2 controllers; 2 threads/node not enough to tolerate 1 hot node |
 | **32T** | Spread wins ~1.7× | Close more robust | 8 vs 4 controllers; close avoids nodes 2–5 entirely |
-| **64T** | Both ~equal | OMP close slightly more stable | Both use 8 threads/node; distance effects equal |
+| **64T** | Both ~equal | OMP close slightly more stable | Both use 8 threads/node; all accesses local for both strategies |
 
 **The physical mechanism at 8T:** Close uses only node 0 (~32 GB of local DDR3, 2
 channels, ~16 GB/s ceiling). Spread uses all 8 nodes (8 × ~16 GB/s theoretical = 128 GB/s)
@@ -546,11 +560,18 @@ Even at partial saturation, spread is 2–3× faster than close at 8T.
 
 ### 8.5 GCC vs. LLVM inner loop explains Rust spread outperforming OMP spread
 
+**This is not a NUMA distance difference.** Both Rust spread and OMP spread pin threads
+to the same cores (via `sched_setaffinity` and `proc_bind` respectively) and perform
+first-touch initialization after pinning. Each thread reads its own locally-allocated
+pages at NUMA distance 10. The bandwidth gap between Rust spread and OMP spread is
+entirely a **code-generation difference** — LLVM extracts more memory-level parallelism
+from the same hardware memory controllers.
+
 Disassembly of both binaries reveals different accumulator strategies:
 
 **GCC** (OpenMP binary) — 1 accumulator, 2 elements per iteration:
 ```asm
-paddq xmm0, xmm2          ; single accumulator chain
+paddq xmm0, xmm2          ; single accumulator chain — 1 cache-line fetch in flight
 add   rax, 2
 jne   ...
 ```
@@ -558,17 +579,18 @@ jne   ...
 **LLVM** (Rust binary) — 2 independent accumulators, 4 elements per iteration:
 ```asm
 pxor  xmm0, xmm0 / pxor  xmm1, xmm1
-movdqu xmm2, [r9+r10*8-0x10] / paddq xmm0, xmm2
+movdqu xmm2, [r9+r10*8-0x10] / paddq xmm0, xmm2   ; 2 concurrent cache-line fetches
 movdqu xmm2, [r9+r10*8]      / paddq xmm1, xmm2
 add   r10, 4 / jne ...
 paddq xmm1, xmm0             ; merge at end
 ```
 
-Two independent chains double instruction-level parallelism and allow the CPU to issue
-two concurrent cache-line fetches. This gives each Rust thread roughly 2× the memory
-request throughput of a GCC thread — effectively doubling per-core MLP. Combined with
-spread's multi-controller layout, this is why Rust spread at 8T (31–45 GB/s) is so much
-higher than OMP spread at 8T (18–23 GB/s) with the same 1-thread-per-node placement.
+Two independent chains break the loop-carried dependency on the accumulator, allowing
+the out-of-order core to issue two concurrent cache-line fetch requests per cycle instead
+of one. This doubles per-core memory-level parallelism (MLP). Combined with spread's
+multi-controller layout, this is why Rust spread at 8T (31–45 GB/s) is so much higher
+than OMP spread at 8T (18–23 GB/s) despite identical 1-thread-per-node placement and
+identical local DRAM access latency.
 
 SIMD counts from objdump: OMP binary — 61 xmm instructions; Rust binary — 3,221 xmm
 instructions (LLVM generates fully unrolled vectorized loops for all three strategies).
@@ -621,7 +643,7 @@ to at least some threads. The high within-run variance (e.g., 7.5–21.0 GB/s at
 | Lines to add pinning | 0 (clause in existing pragma) | ~15 (build_pin_list + set_for_current in spawn closure) |
 | Runtime env required | `OMP_PLACES=cores` (must be set externally) | None |
 | Strategy switching | Requires 3 separate functions (compile-time pragma) | Single `match` on runtime string — one function |
-| First-touch correctness | Automatic if same `proc_bind` used in init | Manual: `unsafe { arr.set_len(n) }` required |
+| First-touch correctness | Automatic if same `proc_bind` used in init | Manual: `unsafe { arr.set_len(n) }` required to delay page allocation until threads are pinned — without it, `vec![0; n]` zero-initializes on the main thread, placing all pages on NUMA node 0 |
 | Unsafe code required | No | Yes (`set_len`, raw pointer sharing) |
 | Default behavior | Persistent pool: accidental locality, fragile | `thread::spawn`: NUMA-blind, consistently mediocre |
 
@@ -644,10 +666,13 @@ Run 4 (clean, 5/5 trials): OMP spread 32T = 87.5 GB/s, OMP close 32T = 52.1 GB/s
 Run 3 (daytime, loaded): OMP spread 32T = 33.0 GB/s (heavily contaminated), OMP close = 64.5 GB/s — close appeared to win.
 The correct ordering is spread > close at 32T on a dedicated machine.
 
-**Finding 5.3 — LLVM's dual-accumulator loop gives Rust spread 2–3× more bandwidth per thread than GCC's single-accumulator loop gives OMP spread.**
+**Finding 5.3 — LLVM's dual-accumulator loop gives Rust spread 2–3× more bandwidth per thread than GCC's single-accumulator loop gives OMP spread. This is a code-generation difference, not a NUMA locality difference.**
 At 8T (1 thread/node), Rust spread achieves 31–45 GB/s vs OMP spread's 18–23 GB/s.
-The LLVM inner loop issues 2 concurrent load requests per cycle; GCC issues 1.
-This effectively doubles per-core memory-level parallelism.
+Both strategies pin threads via `sched_setaffinity` / `proc_bind` before first-touch init,
+so both achieve NUMA-local access (distance 10) from identical memory controllers.
+The gap is purely inner-loop ILP: LLVM's dual-accumulator SSE2 loop issues 2 concurrent
+cache-line fetch requests per cycle; GCC's single-accumulator loop issues 1.
+This doubles per-core memory-level parallelism from the same hardware.
 
 **Finding 5.4 — Rust close is the most reproducible high-bandwidth configuration across all runs.**
 Rust close 8T: stdev 0.10 GB/s across 20 trials. Rust close 16T: stdev 0.14 GB/s.
@@ -674,7 +699,7 @@ reproducible NUMA-aware OMP performance.
 | Metric | Winner | Notes |
 |---|---|---|
 | Peak bandwidth (spread, clean machine) | **Rust** | Rust spread 32T: 95.7 GB/s vs OMP spread 32T: 87.6 GB/s (R4 clean) |
-| Bandwidth per thread (8T, 1 thread/node) | **Rust** | 45.1 vs 23.1 GB/s — LLVM dual-accumulator issues 2 concurrent loads/cycle vs GCC single |
+| Bandwidth per thread (8T, 1 thread/node) | **Rust** | 45.1 vs 23.1 GB/s — LLVM dual-accumulator issues 2 concurrent loads/cycle vs GCC single; **not** a NUMA locality difference — both Rust spread and OMP spread achieve local access (distance 10) via pinning + first-touch |
 | Absolute bandwidth ceiling (64T) | **OMP close** | OMP close 64T: 122–128 GB/s when uninterrupted (~8 nodes × 16 GB/s ≈ DRAM limit) |
 | Reproducibility / stability | **Rust close** | Rust close 8T: stdev 0.10 GB/s across 20 trials; no collapses in any run |
 | Shared-cluster robustness | **OMP close** | Close 32T uses only 4 nodes (0,1,6,7); avoids cluster-loaded nodes 2,4 |
