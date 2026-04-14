@@ -476,7 +476,7 @@ The flip side: OpenMP's spin-waiting is automatic and free. Getting Rust to matc
 | Sensitivity to cluster interference | **OpenMP** | Persistent spin-polling is immune to OS scheduler spikes |
 | Cross-run reproducibility | **OpenMP** | OMP T=2–32 bit-exact across runs; Rust varies up to 6× |
 
-**Bottom line:** For workloads where parallel regions are entered and exited at high frequency (fine-grained parallelism), OpenMP's runtime has a large and growing performance advantage. The clean-cell advantage runs from ~1.6× at 1T to ~19× at 32T (Run 1 clean values), and grows much larger when the cluster is loaded because sleeping threads (Rust) are victims of scheduler interference while spin-waiting threads (OMP) are not. Atomic performance is the one area where Rust's LLVM backend produces better code (8× loop unroll), giving it a 20–35% throughput advantage at T≥8 — a finding that is consistent and stable across all three runs.
+**Bottom line:** For workloads where parallel regions are entered and exited at high frequency (fine-grained parallelism), OpenMP's runtime has a large and growing performance advantage. The clean-cell advantage runs from ~1.6× at 1T to 36.47× at 32T (Run 1 clean values), and grows much larger when the cluster is loaded because sleeping threads (Rust) are victims of scheduler interference while spin-waiting threads (OMP) are not. Atomic performance is the one area where Rust's LLVM backend produces better code (8× loop unroll), giving it a 20–35% throughput advantage at T≥8 — a finding that is consistent and stable across all three runs.
 
 ---
 
