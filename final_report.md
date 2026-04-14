@@ -55,143 +55,54 @@ actionable engineering guidelines.
 
 ## 2. Literature Survey
 
-Research on comparing parallel programming models falls into three broad categories:
-productivity comparisons, performance comparisons, and single-language evaluations.
-We discuss each in turn and explain why existing work does not fully address the
-OpenMP–Rust comparison.
+Prior work on comparing parallel programming models clusters around three questions,
+none of which fully covers the OpenMP–Rust pairing.
 
-### 2.1 Productivity-Focused Comparisons
+**Can programmability be measured?**  Cantonnet et al. [2004] showed it can, using LOC,
+character count, and a conceptual-complexity score (keyword and function-call density)
+to compare UPC against MPI across eight NAS benchmarks.  UPC cut code size by 40–100%
+over MPI, simply because its shared address space eliminated explicit communication.
+The language pair is unrelated to ours, but the methodology is directly inherited: we
+use the same LOC and complexity metrics, and we see the same pattern — OpenMP's
+`reduction` clause expressing in one line what Rust's private-histogram approach needs
+ten for (Benchmark 3).
 
-Cantonnet et al. [2004] propose a framework for measuring programmer productivity in
-parallel languages and apply it to compare Unified Parallel C (UPC) against MPI across
-eight benchmark programs from the NAS Parallel Benchmark suite.  Their productivity
-metrics — lines of code (LOC), number of characters (NOC), and a conceptual complexity
-score counting keywords, function calls, and parameter counts — form the methodological
-basis for programmability measurement in language comparison studies.  Their results show
-that UPC reduces LOC by 40–100% relative to MPI for the same benchmarks, driven by
-UPC's single global address space eliminating explicit communication calls.
+**Does threading model granularity matter?**  Yes, and it is measurable.  Kalderén and
+From [2013] pitted C/OpenMP, C++/TBB, C#/TPL, and Java/Fork-Join against each other on
+SparseLU at varying task sizes.  C/OpenMP was fastest in absolute time; Java handled
+fine-grained tasks better because its Fork/Join framework defers thread-management
+overhead more aggressively than OpenMP's spin-waiting pool.  That finding seeds our
+Benchmark 1 directly — and our results quantify the same effect: at 32 threads, the
+fork/join cost gap between OpenMP and Rust reaches 19×.  Their study predates Rust's
+2015 stable release and covers no NUMA effects or ownership-model trade-offs.
 
-This work is directly relevant to our project in two ways.  First, it establishes LOC
-and conceptual complexity as standard metrics for programmability comparison, which we
-adopt in our analysis.  Second, it demonstrates that two languages can achieve
-equivalent performance with dramatically different programmer effort — a pattern we
-observe between OpenMP's `reduction` clause and Rust's explicit private-histogram
-pattern in Benchmark 3.
+**Can Rust match C/OpenMP in HPC?**  Costanzo et al. [2021] is the closest prior
+comparison: Rust versus C/OpenMP on N-Body simulation.  In double precision the two were
+essentially tied; in single precision C/OpenMP led by up to 1.18× due to more mature
+SIMD intrinsics.  Several gaps motivate a broader study.  They used Rayon, not
+`std::thread` — our Benchmark 4 shows Rayon falling 2× behind OMP dynamic at 64 threads
+on NUMA hardware, a regime they never reached.  Their 2-socket Xeon had only 2 NUMA nodes,
+so affinity was a non-issue; our 4-socket, 8-NUMA-node machine makes thread placement a
+first-order concern.  And their single embarrassingly-parallel application touches neither
+fork/join overhead, irregular scheduling, nor reductions — the workloads where the
+structural differences between the two models are most pronounced.
 
-However, Cantonnet et al. compare UPC (a shared-memory extension of C) against MPI
-(a message-passing library), a fundamentally different language pair from OpenMP vs Rust.
-Their work does not measure runtime overhead of synchronization primitives, NUMA
-sensitivity, or programmer control over thread placement — all of which are first-class
-concerns in this project.
+**Is Rust's safety guarantee real?**  Jung et al. [2017] proved it in Coq.  The RustBelt
+project constructed a machine-checked semantic model of Rust's type system and showed
+that any well-typed program — including code with `unsafe` blocks that maintain their
+invariants — is provably free of data races and memory errors.  Ownership and borrowing
+are not a style convention; they are a type-level encoding of concurrent separation
+logic, enforced at every call site.  Balasubramanian et al. [2017] add practical
+evidence: the borrow checker catches real concurrent bugs before the program runs, and
+explicit ownership makes concurrency structure readable from types alone, without
+inspecting runtime behavior.  By contrast, OpenMP places the entire burden of
+correctness on the programmer — a missing `private()` clause is a silent data race that
+the compiler accepts without complaint.  The upshot for our flowchart: the Q1 branch is
+not a preference; it is a theorem.
 
-### 2.2 Performance-Focused Cross-Language Comparisons
-
-Kalderén and From [2013] compare four parallel models — C with OpenMP, C++ with TBB,
-C# with TPL, and Java with Fork/Join — on a SparseLU benchmark using both thread-count
-scaling and granularity tests.  Their key finding is that C/OpenMP achieves the fastest
-absolute execution time, while C++ achieves the best relative speedup.  Critically, they
-observe that Java handles fine-grained parallelism (small task sizes) better than C/OpenMP,
-because Java's Fork/Join framework defers thread management overhead in ways that OpenMP
-does not.
-
-This finding directly motivates our Benchmark 1: the granularity sensitivity of
-different threading models is a real and measurable phenomenon.  However, Kalderén and
-From use a single application benchmark and do not include Rust in their comparison.
-Their study predates Rust's stable release (2015) and does not address the ownership
-model, NUMA effects, or the trade-off between compile-time safety and runtime flexibility.
-
-### 2.3 Single-Language Evaluations of Rust for HPC
-
-Costanzo et al. [2021] present the closest prior work to this project: a comparison of
-Rust and C (with OpenMP) for the N-Body gravitational simulation on a dual Intel Xeon
-Platinum system.  They find that in double precision, optimized Rust and C/OpenMP
-achieve near-identical performance, while in single precision C/OpenMP leads by up to
-1.18× due to more mature floating-point intrinsics.  For programming effort, Rust
-requires fewer lines of code in the core algorithm (40 vs 66 lines) and allows parallel
-code to be expressed by adding the `par` prefix to iterators via the Rayon library.
-
-Their work is the primary reference for the question of whether Rust can match C/OpenMP
-in HPC performance.  However, several limitations motivate our broader study:
-
-- They use **Rayon** for Rust parallelism, not `std::thread`.  Rayon's work-stealing
-  model conceals thread management overhead.  Our Benchmark 4 shows that Rayon
-  regresses to 2× behind OpenMP at 64 threads on an 8-NUMA-node machine — a regime
-  Costanzo et al. do not test.
-- They test a **single application** (N-Body), which is embarrassingly parallel with
-  no irregular scheduling needs.  They do not test fine-grained fork/join overhead,
-  array reduction patterns, or dynamic scheduling.
-- Their machine has **2 NUMA nodes** (2-socket Xeon), so NUMA effects are minor.
-  Our machine has 8 NUMA nodes, making thread-to-core affinity a first-order concern.
-- They do not measure **synchronization primitive overhead** (barrier, atomic) as a
-  function of thread count, which is where the OpenMP vs Rust structural difference
-  is most pronounced.
-
-### 2.4 Formal Foundations of Rust's Safety Guarantees
-
-A central claim in our flowchart (Q1 — Safety Requirement) is that Rust prevents data
-races at compile time with no runtime overhead.  This claim is backed by a body of formal
-verification work that goes well beyond empirical observation.
-
-**RustBelt — Jung et al. [2017].**
-Jung, Jourdan, Krebbers, and Dreyer present the first machine-checked formal proof that
-Rust's type system correctly enforces memory safety and data-race freedom [Jung 2017].
-Using the Iris framework — a concurrent separation logic embedded in the Coq proof
-assistant — they construct a *semantic model* of Rust's type system and prove that any
-well-typed Rust program (including programs containing `unsafe` blocks, provided the
-unsafe code upholds its documented invariants) is free from data races and memory errors.
-The key insight is that Rust's ownership and borrowing rules are not merely a programmer
-convention: they are a type-level encoding of a formal concurrent separation logic that
-the compiler enforces at every call site.
-
-Three specific properties are proved:
-1. **No data races**: two threads cannot simultaneously hold a mutable reference to the
-   same memory location without synchronization.
-2. **Memory safety**: no use-after-free, no dangling pointers, no out-of-bounds accesses
-   escape from safe Rust.
-3. **`unsafe` encapsulation**: well-written `unsafe` blocks that maintain their internal
-   invariants preserve the safety guarantees of the surrounding safe code.
-
-This contrasts sharply with OpenMP's model: the OpenMP standard [OpenMP ARB 2021] places
-the *entire burden* of data-race freedom on the programmer.  A missing `private()` clause
-or an incorrect `reduction()` specification is a silent data race that the compiler
-accepts without warning.  In our own implementation of Benchmark 1, we discovered a
-non-obvious correctness issue (the need for a `volatile int sink` to prevent the compiler
-from eliminating an empty parallel region) that would have been caught immediately by
-Rust's type system.
-
-**System Programming in Rust — Balasubramanian et al. [2017].**
-Balasubramanian et al. study the practical consequences of Rust's ownership model for
-OS-level concurrent code [Balasubramanian 2017].  They find that Rust's borrow checker
-catches real concurrent bugs — including data races and use-after-free errors that
-silently compile in C — before the program ever runs.  They also argue that the
-*explicit sharing model* (where ownership transfer and borrowing must be stated in
-code) improves long-term maintainability: a code reviewer can determine the concurrency
-structure of a program purely by reading types and function signatures, without
-inspecting the runtime behavior.
-
-This connects to our Q8 finding (long-lived systems and growing teams): the upfront cost
-of satisfying Rust's borrow checker is a one-time investment that yields ongoing
-auditability and refactoring safety — benefits that compound as the codebase grows.
-
-**Implication for this project.**
-The formal results of Jung et al. and Balasubramanian et al. establish that the safety
-advantage of Rust over OpenMP is not merely an empirical observation or a style
-preference — it is a *proven property of the type system*.  No amount of code review,
-testing, or sanitizer instrumentation can provide the same compile-time guarantee that
-Rust's ownership model delivers by construction.  This makes the Q1 branch of our
-decision flowchart an absolute recommendation: for any system where data-race freedom
-is non-negotiable, Rust is the only option among the two languages compared.
-
-### 2.5 Gap Addressed by This Work
-
-The four categories above establish that: (a) LOC and conceptual complexity are valid
-programmability metrics; (b) threading model granularity sensitivity is language-dependent
-and measurable; (c) Rust can match C/OpenMP performance for compute-bound single-application
-benchmarks; (d) Rust's safety advantage over OpenMP is formally proved, not merely
-observed empirically.  What is missing is a **multi-criterion, multi-benchmark systematic
-comparison** of OpenMP vs Rust that includes synchronization overhead, NUMA affinity
-control, irregular scheduling, and scalability up to 64 threads on an 8-NUMA-node machine.
-This project provides that comparison.
+**What is missing.**  No prior study combines synchronization overhead, NUMA affinity
+control, irregular scheduling, and multi-benchmark scalability up to 64 threads on an
+8-NUMA-node machine.  This project fills that gap.
 
 ---
 
