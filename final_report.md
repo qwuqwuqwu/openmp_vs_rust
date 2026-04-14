@@ -14,7 +14,7 @@ we design five benchmark programs spanning synchronization microbenchmarks, emba
 parallel computation, array reduction, irregular scheduling, and NUMA-aware memory-bandwidth
 workloads, all run on the NYU CIMS crunchy5 cluster (AMD Opteron 6272, 4 sockets,
 64 cores, 8 NUMA nodes).  We find that neither model dominates unconditionally: OpenMP
-outperforms Rust on fine-grained synchronization overhead by up to 19× and requires
+outperforms Rust on fine-grained synchronization overhead by up to 36× and requires
 significantly less code for common reduction and scheduling patterns, while Rust delivers
 1.1–2.8× higher memory bandwidth per NUMA node when explicitly pinned with spread affinity
 and prevents data races at compile time.  Based on these findings we derive a decision flowchart that maps
@@ -73,7 +73,7 @@ SparseLU at varying task sizes.  C/OpenMP was fastest in absolute time; Java han
 fine-grained tasks better because its Fork/Join framework defers thread-management
 overhead more aggressively than OpenMP's spin-waiting pool.  That finding seeds our
 Benchmark 1 directly — and our results quantify the same effect: at 32 threads, the
-fork/join cost gap between OpenMP and Rust reaches 19×.  Their study predates Rust's
+fork/join cost gap between OpenMP and Rust reaches 36×.  Their study predates Rust's
 2015 stable release and covers no NUMA effects or ownership-model trade-offs.
 
 **Can Rust match C/OpenMP in HPC?**  Costanzo et al. [2021] is the closest prior
@@ -245,7 +245,7 @@ more than 343 µs of work to benefit.
 | 4 | 5.20 | 36.16 | 7.0× |
 | 8 | 6.14 | 62.0 | 10.1× |
 | 16 | 8.91 | 126 | 14.1× |
-| 32 | 18.14 | 343 | **~19×** |
+| 32 | 17.96 | 655 | **36.47×** |
 
 **Barrier overhead (µs per barrier):**
 
@@ -263,8 +263,8 @@ the same `lock xadd` hardware instruction.
 OpenMP threads spin-wait between parallel regions.  Waking N workers requires no OS
 syscalls — workers detect the flag change in nanoseconds.  Rust's `std::sync::Barrier`
 uses a futex-based condvar: each sleeping thread requires an OS `futex(WAKE)` and a
-context-switch back onto a CPU.  At 32T this totals ~343 µs for Rust vs ~18 µs for
-OpenMP.  The 19× gap grows monotonically with thread count because each additional
+context-switch back onto a CPU.  At 32T this totals 655 µs for Rust vs 17.96 µs for
+OpenMP.  The 36× gap grows monotonically with thread count because each additional
 sleeping thread adds another futex wake-up to the critical path.
 
 This structural difference also manifests as **measurement reliability**: OpenMP produced
@@ -531,7 +531,7 @@ milliseconds:
 
 | Benchmark | Thread count | OMP advantage | Cause |
 |---|---|---|---|
-| B1 Fork/join | 32T | ~19× lower latency | Spin-wait vs condvar |
+| B1 Fork/join | 32T | 36.47× lower latency | Spin-wait vs condvar |
 | B2-1 Popcount | 64T | 4% faster | Pool vs 64 fresh spawns (~3ms) |
 | B3 Histogram | 64T | 12% faster | Same |
 | B4 Prime (dynamic) | 64T | 16% faster | Same |
@@ -554,11 +554,82 @@ questions (Q7/Q8).
 
 ---
 
+### 5.7 Programmability Analysis: Lines of Code and Character Count
+
+Programmability is difficult to quantify, but two widely used proxy metrics are
+**Lines of Code (LOC)** and **character count**.  Cantonnet et al. use character
+count alongside LOC precisely because LOC can be distorted by line-breaking style —
+a single long OpenMP pragma on one line encodes the same semantics as several Rust
+declarations spread across multiple short lines.  Both metrics together triangulate
+implementation verbosity more faithfully than either alone.
+
+We count **non-blank lines** for LOC (blank lines are formatting, not semantics) and
+**total bytes** for character count.  Each measurement covers the complete source file:
+OpenMP implementations are single `.cpp` files; Rust implementations are `src/main.rs`.
+Benchmark 2-2 is a Rust-only variant and has no OpenMP counterpart.
+
+**Lines of Code (non-blank lines):**
+
+| Benchmark | Task | OMP | Rust | Rust / OMP |
+|-----------|------|----:|-----:|-----------:|
+| B1  | Thread synchronization overhead      | 183 | 284 | 1.55× |
+| B2  | Parallel sum (basic variant)         | 160 | 188 | 1.18× |
+| B2-1 | Popcount — embarrassingly parallel  | 166 | 182 | 1.10× |
+| B2-2 | Rust-only variant                   |  —  | 100 |   —   |
+| B3  | Parallel histogram reduction         | 128 | 175 | 1.37× |
+| B4  | Irregular workload — prime testing   | 135 | 241 | 1.79× |
+| B5  | NUMA-aware memory bandwidth          | 151 | 190 | 1.26× |
+| **Mean (B1, B2-1, B3–B5)** |    | **153** | **214** | **1.40×** |
+
+**Character Count (bytes):**
+
+| Benchmark | Task | OMP | Rust | Rust / OMP |
+|-----------|------|----:|-----:|-----------:|
+| B1  | Thread synchronization overhead      | 6,618 | 9,860 | 1.49× |
+| B2  | Parallel sum (basic variant)         | 5,723 | 6,099 | 1.07× |
+| B2-1 | Popcount — embarrassingly parallel  | 6,344 | 6,317 | **1.00×** |
+| B2-2 | Rust-only variant                   |   —   | 3,448 |   —   |
+| B3  | Parallel histogram reduction         | 5,016 | 6,556 | 1.31× |
+| B4  | Irregular workload — prime testing   | 5,503 | 8,776 | 1.59× |
+| B5  | NUMA-aware memory bandwidth          | 6,898 | 8,904 | 1.29× |
+| **Mean (B1, B2-1, B3–B5)** |    | **6,076** | **8,083** | **1.33×** |
+
+**Key observations:**
+
+1. **OpenMP is consistently more concise.**  Rust requires 1.10–1.79× more lines and
+   1.00–1.59× more characters across all benchmarks where a direct comparison exists.
+   On average, an OpenMP implementation is 1.40× shorter by line count and 1.33× shorter
+   by character count.
+
+2. **LOC ratios exceed character-count ratios.**  Rust's extra lines tend to be short
+   (`use` imports, `let mut` bindings, struct field declarations), while OpenMP's fewer
+   lines tend to be longer (pragma clauses, multi-argument function calls).  Character
+   count thus provides a fairer comparison when line-breaking styles differ.
+
+3. **B2-1 (popcount) is the convergence point.**  At 166 vs 182 lines (1.10× LOC), the
+   character count is virtually identical (6,344 vs 6,317 bytes, ratio 1.00×).  One
+   `#pragma omp parallel for reduction(+:sum)` replaces a thread pool, an atomic
+   accumulator, and a join loop in Rust — but Rust's terser identifiers and shorter
+   variable names close the gap entirely at the byte level.
+
+4. **B4 (dynamic scheduling) shows the largest gap.**  Implementing dynamic load
+   balancing in Rust (241 lines, 8,776 bytes) requires 1.79× the code of the equivalent
+   `schedule(dynamic)` clause (135 lines, 5,503 bytes).  The extra Rust code is
+   work-distribution logic that OpenMP encodes as a single keyword.
+
+5. **The two metrics agree on ordering.**  Every benchmark where LOC favors OpenMP,
+   character count also favors OpenMP — just by a smaller margin.  This corroborates
+   Cantonnet et al.'s finding that the two metrics are consistent but not
+   interchangeable, and that character count is the more conservative estimator of
+   the conciseness gap.
+
+---
+
 ## 6. Conclusions
 
 - **OpenMP is the right choice when synchronization frequency is high or when
   conciseness is the priority.**  OpenMP's persistent spin-waiting thread pool delivers
-  fork/join latency 7–19× lower than Rust at 4T–32T — a structural advantage that
+  fork/join latency 7–36× lower than Rust at 4T–32T — a structural advantage that
   determines whether fine-grained parallelism is profitable at all.  For reduction and
   scheduling patterns, OpenMP expresses in one pragma what Rust requires 10–15 explicit
   lines to implement, with no performance penalty at moderate thread counts.
