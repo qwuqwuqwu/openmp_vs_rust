@@ -30,7 +30,7 @@ flowchart TD
 
     Q3 -- "High frequency —\nfine-grained fork/join,\nmillions of regions per second" --> OPENMP_OVERHEAD
 
-    OPENMP_OVERHEAD(["✅ Choose OpenMP\n\nBenchmark 1 result (crunchy5, 1–32T):\nOpenMP fork/join overhead:\n  1T:  4.8 µs   Rust: 6.2 µs  → 1.3×\n  2T:  6.2 µs   Rust: 19.3 µs → 3.1×\n  4T:  5.2 µs   Rust: 36.2 µs → 7.0×\n  8T:  6.1 µs   Rust: 62.0 µs → 10.1×\n  16T: 8.9 µs   Rust: 126 µs  → 14.1×\n  32T: 18.1 µs  Rust: ~343 µs → ~19×\n\nOpenMP threads spin-wait between\nregions — wake-up is nearly free.\nRust Barrier uses condvar + OS\nsyscall — latency scales with T.\n\nAt fine-grained parallelism,\nthis gap dominates total runtime."])
+    OPENMP_OVERHEAD(["✅ Choose OpenMP\n\nBenchmark 1 result (crunchy5, 1–32T):\nOpenMP fork/join overhead:\n  1T:  4.8 µs   Rust: 6.2 µs  → 1.3×\n  2T:  6.2 µs   Rust: 19.3 µs → 3.1×\n  4T:  5.2 µs   Rust: 36.2 µs → 7.0×\n  8T:  6.1 µs   Rust: 62.0 µs → 10.1×\n  16T: 8.9 µs   Rust: 126 µs  → 14.1×\n  32T: 17.96 µs Rust: 655 µs  → 36.47×\n\nOpenMP threads spin-wait between\nregions — wake-up is nearly free.\nRust Barrier uses condvar + OS\nsyscall — latency scales with T.\n\nAt fine-grained parallelism,\nthis gap dominates total runtime."])
 
     Q3 -- "Low frequency —\ncoarse-grained bodies,\nthe parallel work itself\ntakes most of the time" --> Q5
 
@@ -116,8 +116,8 @@ This table will be filled in as benchmarks are completed.
 
 These facts are established from the thread overhead microbenchmark (fork/join, barrier, atomic, 1–32 threads, crunchy5 early-morning low-load run):
 
-1. **OpenMP fork/join overhead is 1.3–19× lower than Rust** from 1T to 32T, with the gap growing with thread count.
-   1T: 4.8 µs vs 6.2 µs (1.3×) — 2T: 6.2 µs vs 19.3 µs (3.1×) — 4T: 5.2 µs vs 36.2 µs (7.0×) — 8T: 6.1 µs vs 62.0 µs (10.1×) — 16T: 8.9 µs vs 126 µs (14.1×) — 32T: 18.1 µs vs ~343 µs (~19×).
+1. **OpenMP fork/join overhead is 1.3–36× lower than Rust** from 1T to 32T, with the gap growing with thread count.
+   1T: 4.8 µs vs 6.2 µs (1.3×) — 2T: 6.2 µs vs 19.3 µs (3.1×) — 4T: 5.2 µs vs 36.2 µs (7.0×) — 8T: 6.1 µs vs 62.0 µs (10.1×) — 16T: 8.9 µs vs 126 µs (14.1×) — 32T: 17.96 µs vs 655 µs (36.47×).
    OpenMP: 3.8× growth from 1T to 32T. Rust: ~55× growth.
    → Drives Q3: if sync frequency is high, OpenMP wins. The gap is decisive and grows monotonically.
 
